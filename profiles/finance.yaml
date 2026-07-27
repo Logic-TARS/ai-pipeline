@@ -1,0 +1,22 @@
+name: finance
+image_gen:
+  count: 4
+  full_size: true
+  prompt_template: >
+    Create {count} ordered clean financial explainer images for a vertical short video.
+    Avoid misleading profit promises. Topic: {topic}
+    Script: {script}
+video_gen:
+  aspect: "9:16"
+  voice_name: "zh-CN-YunxiNeural"
+  subtitle_enabled: true
+  subject_template: "{topic}"
+  script_template: "{script}"
+upload:
+  platform: bilibili
+  account: default
+  tid: 207
+  title_template: "财经观察：{topic}"
+  desc_template: "{script}"
+  tags: ["财经", "金融", "AI视频"]
+  visibility: private

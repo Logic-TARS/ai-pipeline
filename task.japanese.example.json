@@ -1,0 +1,11 @@
+{
+  "description": "将文件夹中的图片通过 Photo-Process 改成日语风格并保存到本地",
+  "content_type": "japanese",
+  "topic": "日语本地改图",
+  "publish": false,
+  "params": {
+    "source_dir": "G:\\Job\\Photo-Datasets\\input",
+    "output_dir": "G:\\Job\\Photo-Datasets\\japanese-output",
+    "image_prompt": "保留主体和构图，将图片改成适合日语内容展示的精致插画风格，不添加视频字幕或平台水印"
+  }
+}

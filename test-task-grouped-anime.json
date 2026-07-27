@@ -1,0 +1,14 @@
+{
+  "description": "Integration test for grouped_anime pipeline",
+  "content_type": "grouped_anime",
+  "topic": "Integration Test",
+  "publish": false,
+  "params": {
+    "source_dir": "G:\\Job\\ai-popline\\test-images-integration",
+    "archive_dir": "C:\\Users\\Family\\AppData\\Local\\Temp\\opencode\\test-archive",
+    "title": "Integration Test",
+    "description": "Test",
+    "tags": ["test"],
+    "dry_run": true
+  }
+}

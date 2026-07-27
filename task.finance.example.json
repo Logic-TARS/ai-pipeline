@@ -1,0 +1,10 @@
+{
+  "description": "生成每日金融视频（干运行）",
+  "content_type": "finance",
+  "publish": false,
+  "params": {
+    "date": "auto",
+    "script_mode": "90_seconds",
+    "dry_run": true
+  }
+}

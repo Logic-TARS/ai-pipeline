@@ -1,0 +1,25 @@
+{
+  "description": "将upstream文件夹中的图片按前缀分组，生成动漫短视频并发布",
+  "content_type": "grouped_anime",
+  "topic": "动漫作品集",
+  "publish": true,
+  "publish_targets": [
+    {
+      "platform": "douyin",
+      "account": "山下富士"
+    },
+    {
+      "platform": "bilibili",
+      "account": "酸菜鱼",
+      "tid": 27
+    }
+  ],
+  "params": {
+    "source_dir": "G:\\Job\\Photo-Datasets\\upstream",
+    "archive_dir": "G:\\Job\\Photo-Datasets\\done",
+    "failed_dir": "G:\\Job\\Photo-Datasets\\failed",
+    "title": "动漫作品集",
+    "description": "使用相同前缀的图片自动组合生成的动漫短视频",
+    "tags": ["动漫", "AI视频", "作品集"]
+  }
+}

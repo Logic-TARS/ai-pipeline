@@ -1,0 +1,27 @@
+[project]
+name = "ai-popline"
+version = "0.1.0"
+description = "AI content production pipeline orchestrating Gemini, MoneyPrinterTurbo, and social-auto-upload."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "av>=14.0.0",
+    "imageio-ffmpeg>=0.6.0",
+    "pillow>=11.0.0",
+    "pydantic>=2.8.0",
+    "pyyaml>=6.0.0",
+    "uvicorn>=0.30.0",
+    "mcp>=1.12.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.setuptools.packages.find]
+include = ["content_pipeline*"]

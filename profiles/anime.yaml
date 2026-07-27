@@ -1,0 +1,23 @@
+name: anime
+image_gen:
+  count: 4
+  full_size: true
+  prompt_template: >
+    Create {count} ordered anime-style storyboard images for a short vertical video.
+    Topic: {topic}
+    Script: {script}
+    Use consistent character design and clear scene progression.
+video_gen:
+  aspect: "9:16"
+  voice_name: "zh-CN-XiaoxiaoNeural"
+  subtitle_enabled: true
+  subject_template: "{topic}"
+  script_template: "{script}"
+upload:
+  platform: bilibili
+  account: default
+  tid: 27
+  title_template: "动漫短片：{topic}"
+  desc_template: "{script}"
+  tags: ["动漫", "AI短片", "原创"]
+  visibility: private
