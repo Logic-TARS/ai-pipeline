@@ -1,4 +1,6 @@
+import json
 import shutil
+import subprocess
 from pathlib import Path
 
 from PIL import Image
@@ -8,7 +10,7 @@ from content_pipeline.job_store import JobStore
 from content_pipeline.models import JobStatus, TaskInput, VideoValidation
 from content_pipeline.orchestrator import Orchestrator
 from content_pipeline.settings import Settings
-from content_pipeline.tools.photo_process_client import archive_source, scan_source_images
+from content_pipeline.tools.photo_process_client import archive_source, call_photo_process, scan_source_images
 from content_pipeline.tools.slideshow_client import choose_bgm, render_slideshow
 
 
@@ -25,6 +27,42 @@ def test_scan_source_images_uses_natural_order_and_archive_is_collision_safe(tmp
     second = archive_source(tmp_path / "1.png", archive_dir)
     assert first.name == "1.png"
     assert second.name == "1_1.png"
+
+
+def test_call_photo_process_forces_utf8_subprocess_output(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "source.png"
+    generated = tmp_path / "生成结果.png"
+    Image.new("RGB", (10, 10)).save(source)
+    Image.new("RGB", (10, 10)).save(generated)
+    captured: dict[str, object] = {}
+
+    def fake_run_command(command, **kwargs):
+        captured["env"] = kwargs["env"]
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"success": True, "image_path": str(generated)}, ensure_ascii=False) + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("content_pipeline.tools.photo_process_client.run_command", fake_run_command)
+    settings = Settings(
+        photo_process_dir=tmp_path,
+        photo_process_python=tmp_path / "python.exe",
+    )
+    settings.photo_process_python.write_text("", encoding="utf-8")
+    (tmp_path / "main.py").write_text("", encoding="utf-8")
+
+    output = call_photo_process(
+        source=source,
+        prompt="日语风格",
+        output_path=tmp_path / "out" / "0001.png",
+        settings=settings,
+    )
+
+    assert captured["env"] == {"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+    assert output == tmp_path / "out" / "0001.png"
+    assert output.is_file()
 
 
 def test_choose_bgm_is_stable(tmp_path: Path) -> None:

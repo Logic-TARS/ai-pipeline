@@ -66,6 +66,7 @@ def call_photo_process(
         cwd=settings.photo_process_dir,
         timeout=900,
         retries=0,
+        env={"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
     )
     payload = _parse_json_result(result.stdout)
     if not payload.get("success"):

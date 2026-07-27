@@ -29,6 +29,7 @@ def run_japanese_pipeline(
     params = JapaneseParams.model_validate(snapshot.task.params)
     source_dir = params.source_dir.expanduser().resolve()
     output_dir = (params.output_dir or (source_dir / "日语改图")).expanduser().resolve()
+    job_dir = store.job_dir(task_id)
     if output_dir == source_dir:
         raise ConfigError("japanese output_dir must be different from source_dir")
 
@@ -49,8 +50,13 @@ def run_japanese_pipeline(
             elif params.dry_run:
                 record.processed_path = _copy_for_dry_run(Path(record.source_path), output_path)
             else:
+                staged_source = _stage_source_copy(
+                    Path(record.source_path),
+                    job_dir / "photo_process_sources",
+                    index,
+                )
                 record.processed_path = call_photo_process(
-                    source=Path(record.source_path),
+                    source=staged_source,
                     prompt=params.image_prompt,
                     output_path=output_path,
                     settings=settings,
@@ -86,6 +92,17 @@ def _copy_for_dry_run(source: Path, output_path: Path) -> Path:
         validate_images([target], 1)
         return target
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+    validate_images([target], 1)
+    return target
+
+
+def _stage_source_copy(source: Path, stage_dir: Path, index: int) -> Path:
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    target = stage_dir / f"{index:04d}{source.suffix.lower()}"
+    if target.is_file():
+        validate_images([target], 1)
+        return target
     shutil.copy2(source, target)
     validate_images([target], 1)
     return target
