@@ -21,8 +21,8 @@ def _check(label: str, ok: bool, detail: str = "") -> str:
 def run_doctor() -> int:
     """Run environment diagnostics and return exit code (0 = all clear)."""
     try:
-        sys.stdout.reconfigure(errors="backslashreplace")
-        sys.stderr.reconfigure(errors="backslashreplace")
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     except (AttributeError, OSError):
         pass
 

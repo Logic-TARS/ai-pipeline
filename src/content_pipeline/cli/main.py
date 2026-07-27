@@ -16,8 +16,8 @@ from content_pipeline.settings import load_settings
 def main() -> int:
     """Main CLI entry point for ai-popline."""
     try:
-        sys.stdout.reconfigure(errors="backslashreplace")
-        sys.stderr.reconfigure(errors="backslashreplace")
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     except (AttributeError, OSError):
         pass
 

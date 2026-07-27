@@ -67,8 +67,8 @@ def run_task_file(path: Path) -> dict:
 
 def main() -> int:
     try:
-        sys.stdout.reconfigure(errors="backslashreplace")
-        sys.stderr.reconfigure(errors="backslashreplace")
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     except (AttributeError, OSError):
         pass
     parser = argparse.ArgumentParser(description="Run one AI content pipeline task")
