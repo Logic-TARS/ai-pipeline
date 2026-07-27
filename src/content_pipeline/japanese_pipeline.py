@@ -4,18 +4,9 @@ import shutil
 from pathlib import Path
 
 from .errors import ConfigError
-from .job_store import JobStore
 from .media_validation import validate_images
-from .models import (
-    AiArtSourceResult,
-    ArtifactSet,
-    JapaneseParams,
-    JobSnapshot,
-    JobStatus,
-    PipelineStep,
-)
-from .pipelines.registry import PipelineMeta, register
-from .settings import Settings
+from .models import AiArtSourceResult, JapaneseParams, JobStatus, PipelineStep
+from .pipelines.registry import PipelineContext, PipelineMeta, register
 from .tools.photo_process_client import run_photo_process_adapter, scan_source_images
 
 JAPANESE_TARGET_GEM_NAME = "日语视觉化"
@@ -32,15 +23,12 @@ JAPANESE_TARGET_GEM_URL = "https://gemini.google.com/gem/f306c82a8105"
         publish_targets=[],
     ),
 )
-def run_japanese_pipeline(
-    *,
-    task_id: str,
-    snapshot: JobSnapshot,
-    artifacts: ArtifactSet,
-    store: JobStore,
-    settings: Settings,
-) -> None:
-    params = JapaneseParams.model_validate(snapshot.task.params)
+def run_japanese_pipeline(ctx: PipelineContext) -> None:
+    task_id = ctx.task_id
+    artifacts = ctx.artifacts
+    store = ctx.store
+    settings = ctx.settings
+    params = JapaneseParams.model_validate(ctx.route.params)
     source_dir = params.source_dir.expanduser().resolve()
     output_dir = (params.output_dir or (source_dir / "日语改图")).expanduser().resolve()
     job_dir = store.job_dir(task_id)

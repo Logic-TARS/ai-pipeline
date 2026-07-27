@@ -5,6 +5,7 @@ import shlex
 from pathlib import Path
 from typing import Any
 
+from content_pipeline.core.publishing.policy import validate_publish_request
 from content_pipeline.errors import ConfigError, ExternalToolError, PrivateVisibilityUnsupportedError
 from content_pipeline.models import PublishTarget
 from content_pipeline.profiles import UploadProfile
@@ -59,6 +60,11 @@ def call_sau_target(
     settings: Settings,
     dry_run: bool = False,
 ) -> dict[str, Any]:
+    if target.platform not in {"douyin", "kuaishou", "tencent", "bilibili"}:
+        raise ConfigError(f"unsupported upload platform: {target.platform}")
+    if not dry_run:
+        _enforce_publish_policy(target.platform, settings)
+
     if target.platform == "douyin":
         command = [
             str(settings.sau_exe),
@@ -225,6 +231,16 @@ def call_sau_target(
     raise ConfigError(f"unsupported upload platform: {target.platform}")
 
 
+def _enforce_publish_policy(platform: str, settings: Settings) -> None:
+    blockers = validate_publish_request(
+        platform=platform,
+        publish_enabled=True,
+        private_args_configured=bool(settings.sau_bilibili_private_args),
+    )
+    if blockers:
+        raise PrivateVisibilityUnsupportedError("; ".join(blockers))
+
+
 def call_sau_upload(
     *,
     profile: UploadProfile,
@@ -268,6 +284,7 @@ def call_sau_upload(
             "private_visibility_check": "skipped_in_dry_run",
         }
 
+    _enforce_publish_policy("bilibili", settings)
     private_args = _bilibili_private_args(settings)
     command.extend(private_args)
 

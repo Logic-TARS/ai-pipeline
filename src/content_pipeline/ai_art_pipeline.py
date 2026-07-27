@@ -4,19 +4,9 @@ from pathlib import Path
 
 from ._pipeline_common import _group_signature, _group_title, _partial_reasons
 from .errors import ConfigError, PrivateVisibilityUnsupportedError
-from .job_store import JobStore
 from .media_validation import validate_images, validate_video
-from .models import (
-    AiArtGroupArtifact,
-    AiArtParams,
-    AiArtSourceResult,
-    ArtifactSet,
-    JobSnapshot,
-    JobStatus,
-    PipelineStep,
-)
-from .pipelines.registry import PipelineMeta, register
-from .settings import Settings
+from .models import AiArtGroupArtifact, AiArtParams, AiArtSourceResult, JobStatus, PipelineStep
+from .pipelines.registry import PipelineContext, PipelineMeta, register
 from .tools.photo_process_client import archive_source, run_photo_process_adapter, scan_source_images
 from .tools.sau_client import call_sau_target
 from .tools.slideshow_client import choose_bgm, render_slideshow
@@ -32,15 +22,13 @@ from .tools.slideshow_client import choose_bgm, render_slideshow
         publish_targets=["douyin", "bilibili"],
     ),
 )
-def run_ai_art_pipeline(
-    *,
-    task_id: str,
-    snapshot: JobSnapshot,
-    artifacts: ArtifactSet,
-    store: JobStore,
-    settings: Settings,
-) -> None:
-    params = AiArtParams.model_validate(snapshot.task.params)
+def run_ai_art_pipeline(ctx: PipelineContext) -> None:
+    task_id = ctx.task_id
+    snapshot = ctx.snapshot
+    artifacts = ctx.artifacts
+    store = ctx.store
+    settings = ctx.settings
+    params = AiArtParams.model_validate(ctx.route.params)
     source_dir = params.source_dir.expanduser().resolve()
     archive_dir = (params.archive_dir or (source_dir / "已处理")).expanduser().resolve()
     failed_dir = params.failed_dir.expanduser().resolve() if params.failed_dir else None

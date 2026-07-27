@@ -106,3 +106,15 @@ src/content_pipeline/
   storage/      # job store persistence
   validation/   # media validation, grouping
 ```
+
+## Module layering status
+
+The project now uses a `src/` layout. Public facades exist for the intended layers:
+
+- `content_pipeline.core.*`: models, errors, and settings.
+- `content_pipeline.pipelines.*`: registered workflow implementations.
+- `content_pipeline.adapters.*`: external tool adapters for Gemini, Photo-Process, MPT, and SAU.
+- `content_pipeline.storage.*`: job persistence.
+- `content_pipeline.validation.*`: media validation.
+
+Legacy imports such as `content_pipeline.tools.*` and top-level pipeline modules remain supported while the implementation is migrated incrementally.

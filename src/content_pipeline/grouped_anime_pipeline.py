@@ -5,20 +5,10 @@ from pathlib import Path
 from ._pipeline_common import _group_signature, _group_title, _partial_reasons
 from .errors import ConfigError, PrivateVisibilityUnsupportedError
 from .grouping import group_by_prefix
-from .job_store import JobStore
 from .media_validation import validate_images, validate_video
-from .models import (
-    AiArtGroupArtifact,
-    AiArtSourceResult,
-    ArtifactSet,
-    GroupedAnimeParams,
-    JobSnapshot,
-    JobStatus,
-    PipelineStep,
-)
-from .pipelines.registry import PipelineMeta, register
+from .models import AiArtGroupArtifact, AiArtSourceResult, GroupedAnimeParams, JobStatus, PipelineStep
+from .pipelines.registry import PipelineContext, PipelineMeta, register
 from .profiles import load_profile
-from .settings import Settings
 from .tools.audio_client import prepare_music_track
 from .tools.mpt_client import call_mpt
 from .tools.photo_process_client import archive_source, scan_source_images
@@ -38,15 +28,13 @@ MPT_VISUAL_ONLY_PLACEHOLDER = "Grouped anime visual showcase"
         publish_targets=["douyin", "bilibili"],
     ),
 )
-def run_grouped_anime_pipeline(
-    *,
-    task_id: str,
-    snapshot: JobSnapshot,
-    artifacts: ArtifactSet,
-    store: JobStore,
-    settings: Settings,
-) -> None:
-    params = GroupedAnimeParams.model_validate(snapshot.task.params)
+def run_grouped_anime_pipeline(ctx: PipelineContext) -> None:
+    task_id = ctx.task_id
+    snapshot = ctx.snapshot
+    artifacts = ctx.artifacts
+    store = ctx.store
+    settings = ctx.settings
+    params = GroupedAnimeParams.model_validate(ctx.route.params)
     source_dir = params.source_dir.expanduser().resolve()
     archive_dir = (params.archive_dir or (source_dir / "已处理")).expanduser().resolve()
     failed_dir = params.failed_dir.expanduser().resolve() if params.failed_dir else None

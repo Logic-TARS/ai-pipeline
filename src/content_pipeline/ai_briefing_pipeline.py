@@ -12,18 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from .errors import ConfigError
-from .job_store import JobStore
 from .media_validation import validate_video
-from .models import (
-    AiBriefingParams,
-    ArtifactSet,
-    JobSnapshot,
-    JobStatus,
-    PipelineStep,
-    PublishTarget,
-)
-from .pipelines.registry import PipelineMeta, register
-from .settings import Settings
+from .models import AiBriefingParams, JobStatus, PipelineStep, PublishTarget
+from .pipelines.registry import PipelineContext, PipelineMeta, register
 from .tools.narrated_mpt_client import call_narrated_mpt, validate_spoken_subtitle
 from .tools.sau_client import call_sau_target
 
@@ -337,15 +328,13 @@ def _handoff_event(
         publish_targets=["douyin", "kuaishou", "tencent"],
     ),
 )
-def run_ai_briefing_pipeline(
-    *,
-    task_id: str,
-    snapshot: JobSnapshot,
-    artifacts: ArtifactSet,
-    store: JobStore,
-    settings: Settings,
-) -> None:
-    params = AiBriefingParams.model_validate(snapshot.task.params)
+def run_ai_briefing_pipeline(ctx: PipelineContext) -> None:
+    task_id = ctx.task_id
+    snapshot = ctx.snapshot
+    artifacts = ctx.artifacts
+    store = ctx.store
+    settings = ctx.settings
+    params = AiBriefingParams.model_validate(ctx.route.params)
     date = normalize_date(params.date)
     source_root = params.source_dir or settings.ai_briefing_dir
     day_dir = source_root.expanduser().resolve() / date

@@ -5,18 +5,9 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from .errors import ConfigError
-from .job_store import JobStore
 from .media_validation import validate_video
-from .models import (
-    ArtifactSet,
-    FinanceParams,
-    JobSnapshot,
-    JobStatus,
-    PipelineStep,
-    PublishTarget,
-)
-from .pipelines.registry import PipelineMeta, register
-from .settings import Settings
+from .models import FinanceParams, JobStatus, PipelineStep, PublishTarget
+from .pipelines.registry import PipelineContext, PipelineMeta, register
 from .tools.finance_mpt_client import call_finance_mpt
 from .tools.narrated_mpt_client import looks_like_file_reference, validate_spoken_subtitle
 from .tools.sau_client import call_sau_target
@@ -322,15 +313,13 @@ def _publication_date_from_path(path: Path) -> str:
         publish_targets=["douyin", "kuaishou"],
     ),
 )
-def run_finance_pipeline(
-    *,
-    task_id: str,
-    snapshot: JobSnapshot,
-    artifacts: ArtifactSet,
-    store: JobStore,
-    settings: Settings,
-) -> None:
-    params = FinanceParams.model_validate(snapshot.task.params)
+def run_finance_pipeline(ctx: PipelineContext) -> None:
+    task_id = ctx.task_id
+    snapshot = ctx.snapshot
+    artifacts = ctx.artifacts
+    store = ctx.store
+    settings = ctx.settings
+    params = FinanceParams.model_validate(ctx.route.params)
     source_dir = params.source_dir or settings.finance_md_dir
     job_dir = store.job_dir(task_id)
 

@@ -1,0 +1,9 @@
+{
+  "description": "生成并发布每日金融视频",
+  "content_type": "finance",
+  "publish": true,
+  "params": {
+    "date": "auto",
+    "script_mode": "90_seconds"
+  }
+}

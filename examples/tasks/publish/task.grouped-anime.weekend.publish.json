@@ -1,0 +1,25 @@
+{
+  "description": "按文件名前缀分组，通过 MPT 生成纯音乐动漫展示视频并私密发布",
+  "content_type": "grouped_anime",
+  "publish": true,
+  "publish_targets": [
+    {
+      "platform": "douyin",
+      "account": "山下富士"
+    },
+    {
+      "platform": "bilibili",
+      "account": "酸菜鱼-sakana",
+      "tid": 27
+    }
+  ],
+  "params": {
+    "source_dir": "G:\\Job\\Photo-Datasets\\input",
+    "archive_dir": "G:\\Job\\Photo-Datasets\\done",
+    "failed_dir": "G:\\Job\\Photo-Datasets\\failed",
+    "description": "纯音乐动漫图片展示",
+    "tags": ["动漫", "AI视频", "作品集"],
+    "group_size": 4,
+    "seconds_per_image": 5
+  }
+}

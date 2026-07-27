@@ -41,8 +41,8 @@ BILIBILI = PlatformPolicy(
     visibility_requirement="--is-only-self 1",
     proof_required="SAU_BILIBILI_PRIVATE_ARGS must be configured and passed to the upload command",
     fail_closed_rule=(
-        "Bilibili upload is BLOCKED entirely if SAU_BILIBILI_PRIVATE_ARGS is not configured. "
-        "A configured but failed upload reports PUBLISH_FAILED."
+        "Bilibili upload is BLOCKED entirely if SAU_BILIBILI_PRIVATE_ARGS='--is-only-self 1' "
+        "is not configured. A configured but failed upload reports PUBLISH_FAILED."
     ),
 )
 
