@@ -1,4 +1,4 @@
-"""Comprehensive test suite for all 8 MCP tools."""
+"""Comprehensive test suite for MCP tools."""
 
 import asyncio
 from pathlib import Path
@@ -8,15 +8,23 @@ import pytest
 from content_pipeline.job_store import JobStore
 from content_pipeline.mcp_server import (
     generate_images,
+    get_external_tool_contracts,
+    get_job_events,
     get_status,
+    list_capabilities,
     list_jobs,
     list_profiles,
     process_ai_art,
+    process_ai_art_async,
+    process_japanese_images,
     render_video,
+    run_finance_video_async,
+    run_task_async,
     run_task_sync,
+    start_task,
     submit_task,
 )
-from content_pipeline.models import JobStatus
+from content_pipeline.models import JobStatus, TaskInput
 from content_pipeline.orchestrator import Orchestrator
 from content_pipeline.settings import Settings
 
@@ -40,6 +48,17 @@ def _make_orchestrator(tmp_path: Path) -> Orchestrator:
     """Create an Orchestrator with isolated Settings and JobStore."""
     settings = _make_settings(tmp_path)
     return Orchestrator(settings=settings, store=JobStore(settings.data_dir))
+
+
+class FakeExecutor:
+    """Capture submitted work without starting real browser/video jobs."""
+
+    def __init__(self) -> None:
+        self.calls = []
+
+    def submit(self, fn, *args):
+        self.calls.append((fn, args))
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -111,14 +130,111 @@ def test_submit_task_with_publish_targets(tmp_path: Path) -> None:
                 content_type="anime",
                 topic="周五下班",
                 publish=True,
+                publish_targets=[{"platform": "douyin", "account": "测试账号"}],
                 params={"dry_run": True},
             )
         )
         assert "task_id" in result
         assert len(result["task_id"]) == 32
+        snapshot = orch.store.get(result["task_id"])
+        assert snapshot.task.publish_targets[0].platform == "douyin"
     finally:
         mcp_mod.orchestrator = original_orch
         mcp_mod.settings = original_settings
+
+
+def test_run_task_async_starts_background_task(tmp_path: Path) -> None:
+    settings = _make_settings(tmp_path)
+    orch = Orchestrator(settings=settings, store=JobStore(settings.data_dir))
+    fake_executor = FakeExecutor()
+
+    import content_pipeline.mcp_server as mcp_mod
+
+    original_orch = mcp_mod.orchestrator
+    original_settings = mcp_mod.settings
+    original_executor = mcp_mod.executor
+    try:
+        mcp_mod.orchestrator = orch
+        mcp_mod.settings = settings
+        mcp_mod.executor = fake_executor
+
+        result = asyncio.run(
+            run_task_async(
+                description="异步任务",
+                content_type="anime",
+                topic="测试",
+                params={"dry_run": True},
+            )
+        )
+        assert result["status"] == "queued"
+        assert len(fake_executor.calls) == 1
+        fn, args = fake_executor.calls[0]
+        assert fn == orch.run
+        assert args == (result["task_id"],)
+    finally:
+        mcp_mod.orchestrator = original_orch
+        mcp_mod.settings = original_settings
+        mcp_mod.executor = original_executor
+
+
+def test_start_task_submits_existing_task(tmp_path: Path) -> None:
+    settings = _make_settings(tmp_path)
+    orch = Orchestrator(settings=settings, store=JobStore(settings.data_dir))
+    fake_executor = FakeExecutor()
+
+    import content_pipeline.mcp_server as mcp_mod
+
+    original_orch = mcp_mod.orchestrator
+    original_executor = mcp_mod.executor
+    try:
+        mcp_mod.orchestrator = orch
+        mcp_mod.executor = fake_executor
+
+        task_id = orch.submit(
+            TaskInput(
+                description="待启动",
+                content_type="anime",
+                topic="测试",
+                params={"dry_run": True},
+            )
+        )
+        result = asyncio.run(start_task(task_id))
+        assert result == {"task_id": task_id, "status": "queued"}
+        assert fake_executor.calls[0][1] == (task_id,)
+    finally:
+        mcp_mod.orchestrator = original_orch
+        mcp_mod.executor = original_executor
+
+
+def test_start_task_does_not_restart_finished_task(tmp_path: Path) -> None:
+    settings = _make_settings(tmp_path)
+    orch = Orchestrator(settings=settings, store=JobStore(settings.data_dir))
+    fake_executor = FakeExecutor()
+
+    import content_pipeline.mcp_server as mcp_mod
+
+    original_orch = mcp_mod.orchestrator
+    original_executor = mcp_mod.executor
+    try:
+        mcp_mod.orchestrator = orch
+        mcp_mod.executor = fake_executor
+
+        task_id = orch.submit(
+            TaskInput(
+                description="已完成",
+                content_type="anime",
+                topic="测试",
+                params={"dry_run": True},
+            )
+        )
+        orch.store.finish(task_id, JobStatus.SUCCEEDED)
+
+        result = asyncio.run(start_task(task_id))
+        assert result == {"task_id": task_id, "status": "succeeded"}
+        assert fake_executor.calls == []
+    finally:
+        mcp_mod.orchestrator = original_orch
+        mcp_mod.executor = original_executor
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +284,55 @@ def test_get_status_unknown_task_raises(tmp_path: Path) -> None:
     finally:
         mcp_mod.orchestrator = original_orch
         mcp_mod.settings = original_settings
+
+
+def test_get_job_events_returns_recent_events(tmp_path: Path) -> None:
+    settings = _make_settings(tmp_path)
+    orch = Orchestrator(settings=settings, store=JobStore(settings.data_dir))
+
+    import content_pipeline.mcp_server as mcp_mod
+
+    original_orch = mcp_mod.orchestrator
+    try:
+        mcp_mod.orchestrator = orch
+        task_id = orch.submit(
+            TaskInput(
+                description="事件测试",
+                content_type="anime",
+                topic="测试",
+                params={"dry_run": True},
+            )
+        )
+        orch.store.event(task_id, "custom_event", {"ok": True})
+
+        result = asyncio.run(get_job_events(task_id, limit=1))
+        assert result["task_id"] == task_id
+        assert result["events"][0]["event"] == "custom_event"
+        assert result["events"][0]["payload"] == {"ok": True}
+    finally:
+        mcp_mod.orchestrator = original_orch
+
+
+def test_list_capabilities_describes_agent_workflows() -> None:
+    result = asyncio.run(list_capabilities())
+
+    workflow_names = {workflow["name"] for workflow in result["workflows"]}
+    assert "generic_content_task" in workflow_names
+    assert "photo_process_image_folder" in workflow_names
+    assert "finance_video" in workflow_names
+    assert "get_status" in result["status_tools"]
+    photo_workflow = next(
+        workflow for workflow in result["workflows"] if workflow["name"] == "photo_process_image_folder"
+    )
+    assert photo_workflow["lower_tool"]["boundary"] == "CLI JSON adapter"
+
+
+def test_get_external_tool_contracts_returns_photo_process_contract() -> None:
+    result = asyncio.run(get_external_tool_contracts())
+
+    assert result["tools"][0]["name"] == "Photo-Process"
+    assert result["tools"][0]["boundary"] == "CLI JSON adapter"
+    assert "--json" in result["tools"][0]["command"]
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +545,111 @@ def test_process_ai_art_no_source_dir(tmp_path: Path) -> None:
     finally:
         mcp_mod.orchestrator = original_orch
         mcp_mod.settings = original_settings
+
+
+def test_process_ai_art_async_builds_explicit_task(tmp_path: Path) -> None:
+    settings = _make_settings(tmp_path)
+    orch = Orchestrator(settings=settings, store=JobStore(settings.data_dir))
+    fake_executor = FakeExecutor()
+
+    import content_pipeline.mcp_server as mcp_mod
+
+    original_orch = mcp_mod.orchestrator
+    original_settings = mcp_mod.settings
+    original_executor = mcp_mod.executor
+    try:
+        mcp_mod.orchestrator = orch
+        mcp_mod.settings = settings
+        mcp_mod.executor = fake_executor
+
+        result = asyncio.run(
+            process_ai_art_async(
+                source_dir=str(tmp_path / "images"),
+                image_prompt="水彩风格",
+                title="作品集",
+                archive_dir=str(tmp_path / "done"),
+                failed_dir=str(tmp_path / "failed"),
+                group_size=3,
+                publish_targets=[{"platform": "douyin", "account": "测试账号"}],
+                publish=True,
+            )
+        )
+        snapshot = orch.store.get(result["task_id"])
+        assert snapshot.task.content_type == "ai_art"
+        assert snapshot.task.params["group_size"] == 3
+        assert snapshot.task.params["archive_dir"] == str(tmp_path / "done")
+        assert snapshot.task.publish_targets[0].platform == "douyin"
+        assert fake_executor.calls[0][1] == (result["task_id"],)
+    finally:
+        mcp_mod.orchestrator = original_orch
+        mcp_mod.settings = original_settings
+        mcp_mod.executor = original_executor
+
+
+def test_process_japanese_images_builds_photo_process_task(tmp_path: Path) -> None:
+    settings = _make_settings(tmp_path)
+    orch = Orchestrator(settings=settings, store=JobStore(settings.data_dir))
+    fake_executor = FakeExecutor()
+
+    import content_pipeline.mcp_server as mcp_mod
+
+    original_orch = mcp_mod.orchestrator
+    original_executor = mcp_mod.executor
+    try:
+        mcp_mod.orchestrator = orch
+        mcp_mod.executor = fake_executor
+
+        result = asyncio.run(
+            process_japanese_images(
+                source_dir=str(tmp_path / "input"),
+                output_dir=str(tmp_path / "output"),
+                image_prompt="日语视觉化",
+                source_files=["one.png"],
+                dry_run=True,
+            )
+        )
+        snapshot = orch.store.get(result["task_id"])
+        assert snapshot.task.content_type == "japanese"
+        assert snapshot.task.publish is False
+        assert snapshot.task.params["source_files"] == ["one.png"]
+        assert snapshot.task.params["output_dir"] == str(tmp_path / "output")
+        assert fake_executor.calls[0][1] == (result["task_id"],)
+    finally:
+        mcp_mod.orchestrator = original_orch
+        mcp_mod.executor = original_executor
+
+
+def test_run_finance_video_async_builds_guarded_task(tmp_path: Path) -> None:
+    settings = _make_settings(tmp_path)
+    orch = Orchestrator(settings=settings, store=JobStore(settings.data_dir))
+    fake_executor = FakeExecutor()
+
+    import content_pipeline.mcp_server as mcp_mod
+
+    original_orch = mcp_mod.orchestrator
+    original_executor = mcp_mod.executor
+    try:
+        mcp_mod.orchestrator = orch
+        mcp_mod.executor = fake_executor
+
+        result = asyncio.run(
+            run_finance_video_async(
+                date="2026-07-26",
+                dry_run=True,
+                publish=False,
+                title="基金日报",
+            )
+        )
+        snapshot = orch.store.get(result["task_id"])
+        assert snapshot.task.content_type == "finance"
+        assert snapshot.task.publish is False
+        assert snapshot.task.params["date"] == "2026-07-26"
+        assert snapshot.task.params["dry_run"] is True
+        assert snapshot.task.params["title"] == "基金日报"
+        assert fake_executor.calls[0][1] == (result["task_id"],)
+    finally:
+        mcp_mod.orchestrator = original_orch
+        mcp_mod.executor = original_executor
 
 
 # ---------------------------------------------------------------------------

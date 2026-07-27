@@ -2,15 +2,73 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 from content_pipeline.errors import ConfigError, ExternalToolError
 from content_pipeline.media_validation import validate_images
+from content_pipeline.models import AdapterResult, ErrorCode
 from content_pipeline.settings import Settings
 from content_pipeline.tools.common import run_command
 
 
 SOURCE_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+
+
+def photo_process_contract(settings: Settings) -> dict[str, object]:
+    return {
+        "name": "Photo-Process",
+        "boundary": "CLI JSON adapter",
+        "cwd": str(settings.photo_process_dir),
+        "python": str(settings.photo_process_python),
+        "command": [
+            str(settings.photo_process_python),
+            str(settings.photo_process_dir / "main.py"),
+            "comic",
+            "--image",
+            "<image>",
+            "--prompt",
+            "<prompt>",
+            "--json",
+        ],
+        "timeout_seconds": 900,
+        "result_schema": {
+            "ok": "boolean success flag",
+            "tool": "Photo-Process",
+            "code": "OK | CONFIG_ERROR | INPUT_ERROR | SOURCE_NOT_FOUND | EXTERNAL_TOOL_FAILED | NO_OUTPUT | VALIDATION_FAILED | TIMEOUT",
+            "message": "human-readable detail or null",
+            "artifacts": {
+                "image_path": "absolute generated image path from Photo-Process",
+                "processed_path": "absolute copied parent-job artifact path",
+                "width": "integer pixel width",
+                "height": "integer pixel height",
+                "format": "validated image format",
+                "target_aspect_ratio": "parsed ratio from prompt when present",
+                "source_done_path": "optional moved original path",
+            },
+            "evidence": {
+                "command": "adapter command argv",
+                "cwd": "adapter working directory",
+                "timeout_seconds": 900,
+                "validation": "validated copied image metadata",
+                "reused_existing": "true when an existing parent artifact was reused",
+            },
+            "raw": {
+                "photo_process_json": "final JSON object from Photo-Process stdout when available",
+                "stderr_tail": "stderr tail when command execution failed",
+            },
+        },
+        "owned_behavior": [
+            "Gemini browser automation",
+            "current-response candidate selection",
+            "image decode and aspect-ratio validation",
+        ],
+        "caller_rules": [
+            "Pass staged copies when originals must be preserved.",
+            "Parse only the final JSON object from stdout.",
+            "Validate the returned artifact before committing it to the parent job.",
+        ],
+    }
 
 
 def scan_source_images(source_dir: Path, source_files: list[str] | None = None) -> list[Path]:
@@ -42,16 +100,53 @@ def call_photo_process(
     output_path: Path,
     settings: Settings,
     target_gem_name: str | None = None,
+    target_gem_url: str | None = None,
 ) -> Path:
+    result = run_photo_process_adapter(
+        source=source,
+        prompt=prompt,
+        output_path=output_path,
+        settings=settings,
+        target_gem_name=target_gem_name,
+        target_gem_url=target_gem_url,
+    )
+    if not result.ok:
+        raise ExternalToolError(f"Photo-Process failed [{result.code.value}]: {result.message or 'unknown error'}")
+    processed_path = result.artifacts.get("processed_path")
+    if not processed_path:
+        raise ExternalToolError("Photo-Process adapter succeeded without processed_path")
+    return Path(str(processed_path))
+
+
+def run_photo_process_adapter(
+    *,
+    source: Path,
+    prompt: str,
+    output_path: Path,
+    settings: Settings,
+    target_gem_name: str | None = None,
+    target_gem_url: str | None = None,
+) -> AdapterResult:
     for existing in sorted(output_path.parent.glob(f"{output_path.stem}.*")) if output_path.parent.exists() else []:
         if existing.suffix.lower() in SOURCE_IMAGE_SUFFIXES and existing.is_file():
-            validate_images([existing], 1)
-            return existing
+            try:
+                validation = validate_images([existing], 1)
+            except Exception as exc:
+                return _failure(ErrorCode.VALIDATION_FAILED, str(exc), artifacts={"processed_path": str(existing)})
+            return _success(
+                image_path=existing,
+                processed_path=existing,
+                validation=validation,
+                evidence={"reused_existing": True},
+                raw={},
+            )
+    if not source.is_file():
+        return _failure(ErrorCode.SOURCE_NOT_FOUND, f"source image does not exist: {source}")
     if not settings.photo_process_python.is_file():
-        raise ConfigError(f"Photo-Process Python not found: {settings.photo_process_python}")
+        return _failure(ErrorCode.CONFIG_ERROR, f"Photo-Process Python not found: {settings.photo_process_python}")
     main_py = settings.photo_process_dir / "main.py"
     if not main_py.is_file():
-        raise ConfigError(f"Photo-Process entrypoint not found: {main_py}")
+        return _failure(ErrorCode.CONFIG_ERROR, f"Photo-Process entrypoint not found: {main_py}")
 
     command = [
         str(settings.photo_process_python),
@@ -64,29 +159,86 @@ def call_photo_process(
     ]
     if target_gem_name:
         command.extend(["--target-gem-name", target_gem_name])
+    if target_gem_url:
+        command.extend(["--target-gem-url", target_gem_url])
     command.append("--json")
+    evidence = {
+        "command": command,
+        "cwd": str(settings.photo_process_dir),
+        "timeout_seconds": 900,
+        "reused_existing": False,
+    }
 
-    result = run_command(
-        command,
-        cwd=settings.photo_process_dir,
-        timeout=900,
-        retries=0,
-        env={"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
-    )
-    payload = _parse_json_result(result.stdout)
+    try:
+        result = run_command(
+            command,
+            cwd=settings.photo_process_dir,
+            timeout=900,
+            retries=0,
+            env={"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
+        )
+    except subprocess.TimeoutExpired as exc:
+        return _failure(ErrorCode.TIMEOUT, f"Photo-Process timed out after 900 seconds: {exc}", evidence=evidence)
+    except ExternalToolError as exc:
+        return _failure(ErrorCode.EXTERNAL_TOOL_FAILED, str(exc), evidence=evidence)
+
+    try:
+        payload = _parse_json_result(result.stdout)
+    except ExternalToolError as exc:
+        return _failure(
+            ErrorCode.NO_OUTPUT,
+            str(exc),
+            evidence=evidence,
+            raw={"stdout_tail": result.stdout[-1000:], "stderr_tail": result.stderr[-1000:]},
+        )
     if not payload.get("success"):
-        raise ExternalToolError(
-            f"Photo-Process failed [{payload.get('error_type', 'unknown')}]: {payload.get('error', 'unknown error')}"
+        return _failure(
+            _error_code_from_payload(payload),
+            str(payload.get("error", "unknown error")),
+            evidence=evidence,
+            raw={"photo_process_json": payload},
         )
     generated = Path(str(payload.get("image_path", ""))).expanduser()
     if not generated.is_absolute():
         generated = settings.photo_process_dir / generated
-    validate_images([generated], 1)
+    if not generated.is_file():
+        return _failure(
+            ErrorCode.NO_OUTPUT,
+            f"Photo-Process reported missing image_path: {generated}",
+            evidence=evidence,
+            raw={"photo_process_json": payload},
+        )
+    try:
+        validate_images([generated], 1)
+    except Exception as exc:
+        return _failure(
+            ErrorCode.VALIDATION_FAILED,
+            str(exc),
+            artifacts={"image_path": str(generated)},
+            evidence=evidence,
+            raw={"photo_process_json": payload},
+        )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     target = output_path.with_suffix(generated.suffix.lower())
     shutil.copy2(generated, target)
-    validate_images([target], 1)
-    return target
+    try:
+        validation = validate_images([target], 1)
+    except Exception as exc:
+        return _failure(
+            ErrorCode.VALIDATION_FAILED,
+            str(exc),
+            artifacts={"image_path": str(generated), "processed_path": str(target)},
+            evidence=evidence,
+            raw={"photo_process_json": payload},
+        )
+    return _success(
+        image_path=generated,
+        processed_path=target,
+        validation=validation,
+        evidence=evidence,
+        raw={"photo_process_json": payload},
+        payload=payload,
+    )
 
 
 def archive_source(source: Path, archive_dir: Path) -> Path:
@@ -113,6 +265,69 @@ def _parse_json_result(stdout: str) -> dict:
         if isinstance(value, dict):
             return value
     raise ExternalToolError(f"Photo-Process did not return a JSON result: {stdout[-1000:]}")
+
+
+def _success(
+    *,
+    image_path: Path,
+    processed_path: Path,
+    validation: object,
+    evidence: dict[str, object],
+    raw: dict[str, object],
+    payload: dict | None = None,
+) -> AdapterResult:
+    first_file = validation.files[0]
+    artifacts: dict[str, object] = {
+        "image_path": str(image_path),
+        "processed_path": str(processed_path),
+        "format": first_file.format,
+        "width": first_file.width,
+        "height": first_file.height,
+    }
+    if payload:
+        for key in ("target_aspect_ratio", "source_done_path"):
+            if payload.get(key) is not None:
+                artifacts[key] = payload[key]
+    return AdapterResult(
+        ok=True,
+        tool="Photo-Process",
+        code=ErrorCode.OK,
+        artifacts=artifacts,
+        evidence={**evidence, "validation": validation.model_dump(mode="json")},
+        raw=raw,
+    )
+
+
+def _failure(
+    code: ErrorCode,
+    message: str,
+    *,
+    artifacts: dict[str, object] | None = None,
+    evidence: dict[str, object] | None = None,
+    raw: dict[str, object] | None = None,
+) -> AdapterResult:
+    return AdapterResult(
+        ok=False,
+        tool="Photo-Process",
+        code=code,
+        message=message,
+        artifacts=artifacts or {},
+        evidence=evidence or {},
+        raw=raw or {},
+    )
+
+
+def _error_code_from_payload(payload: dict) -> ErrorCode:
+    error_type = str(payload.get("error_type", "")).lower()
+    if error_type in {"input_error", "invalid_input"}:
+        return ErrorCode.INPUT_ERROR
+    if error_type in {"no_output", "missing_output"}:
+        return ErrorCode.NO_OUTPUT
+    if "timeout" in error_type:
+        return ErrorCode.TIMEOUT
+    if "validation" in error_type:
+        return ErrorCode.VALIDATION_FAILED
+    return ErrorCode.EXTERNAL_TOOL_FAILED
 
 
 def _natural_key(path: Path) -> list[object]:

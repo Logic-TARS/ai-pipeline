@@ -29,6 +29,31 @@ class JobStatus(str, Enum):
     PARTIAL = "partial"
 
 
+class ErrorCode(str, Enum):
+    OK = "OK"
+    CONFIG_ERROR = "CONFIG_ERROR"
+    INPUT_ERROR = "INPUT_ERROR"
+    SOURCE_NOT_FOUND = "SOURCE_NOT_FOUND"
+    SOURCE_SCAN_FAILED = "SOURCE_SCAN_FAILED"
+    EXTERNAL_TOOL_FAILED = "EXTERNAL_TOOL_FAILED"
+    NO_OUTPUT = "NO_OUTPUT"
+    VALIDATION_FAILED = "VALIDATION_FAILED"
+    PRIVATE_VISIBILITY_UNSUPPORTED = "PRIVATE_VISIBILITY_UNSUPPORTED"
+    PUBLISH_FAILED = "PUBLISH_FAILED"
+    ALREADY_PUBLISHED = "ALREADY_PUBLISHED"
+    TIMEOUT = "TIMEOUT"
+
+
+class AdapterResult(BaseModel):
+    ok: bool
+    tool: str
+    code: ErrorCode
+    message: str | None = None
+    artifacts: dict[str, Any] = Field(default_factory=dict)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
 class PublishTarget(BaseModel):
     platform: Literal["douyin", "kuaishou", "bilibili", "tencent"]
     account: str = Field(min_length=1)
@@ -148,6 +173,7 @@ class AiArtSourceResult(BaseModel):
     processed_path: Path | None = None
     archived_path: Path | None = None
     failed_path: Path | None = None
+    adapter_result: AdapterResult | None = None
     error: str | None = None
 
 

@@ -1,24 +1,57 @@
 from __future__ import annotations
 
 import logging
+import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from mcp.server import FastMCP
 
-from .models import TaskInput, PublishTarget, JobSnapshot
+from .models import TaskInput, PublishTarget, JobSnapshot, JobStatus
 from .orchestrator import Orchestrator
 from .profiles import load_profile
 from .settings import load_settings
 from .tools.gemini_client import call_gemini_skill
 from .tools.mpt_client import call_mpt
+from .tools.photo_process_client import photo_process_contract
 
 mcp = FastMCP("ai-popline")
 
 settings = load_settings()
 orchestrator = Orchestrator(settings=settings)
+executor = ThreadPoolExecutor(max_workers=2)
+
+
+def _publish_targets(publish_targets: list[dict[str, Any]] | None) -> list[PublishTarget]:
+    return [PublishTarget(**target) for target in (publish_targets or [])]
+
+
+def _make_task(
+    *,
+    description: str,
+    content_type: str | None = None,
+    topic: str | None = None,
+    publish: bool = False,
+    publish_targets: list[dict[str, Any]] | None = None,
+    params: dict[str, Any] | None = None,
+) -> TaskInput:
+    return TaskInput(
+        description=description,
+        content_type=content_type,
+        topic=topic,
+        publish=publish,
+        publish_targets=_publish_targets(publish_targets),
+        params=params or {},
+    )
+
+
+def _submit_and_start(task: TaskInput) -> dict[str, str]:
+    task_id = orchestrator.submit(task)
+    executor.submit(orchestrator.run, task_id)
+    return {"task_id": task_id, "status": "queued"}
 
 @mcp.tool()
 async def submit_task(
@@ -26,17 +59,50 @@ async def submit_task(
     content_type: str | None = None,
     topic: str | None = None,
     publish: bool = False,
+    publish_targets: list[dict[str, Any]] | None = None,
     params: dict[str, Any] | None = None,
 ) -> dict[str, str]:
-    """Submit a new content pipeline task."""
-    task = TaskInput(
+    """Create a queued content pipeline task without starting execution."""
+    task = _make_task(
         description=description,
         content_type=content_type,
         topic=topic,
         publish=publish,
+        publish_targets=publish_targets,
         params=params or {},
     )
     task_id = orchestrator.submit(task)
+    return {"task_id": task_id, "status": "queued"}
+
+
+@mcp.tool()
+async def run_task_async(
+    description: str,
+    content_type: str | None = None,
+    topic: str | None = None,
+    publish: bool = False,
+    publish_targets: list[dict[str, Any]] | None = None,
+    params: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """Submit and start a long-running task; poll get_status with the returned task_id."""
+    task = _make_task(
+        description=description,
+        content_type=content_type,
+        topic=topic,
+        publish=publish,
+        publish_targets=publish_targets,
+        params=params or {},
+    )
+    return _submit_and_start(task)
+
+
+@mcp.tool()
+async def start_task(task_id: str) -> dict[str, str]:
+    """Start a queued task by id; use get_status to observe progress."""
+    snapshot = orchestrator.store.get(task_id)
+    if snapshot.status != JobStatus.QUEUED:
+        return {"task_id": task_id, "status": snapshot.status.value}
+    executor.submit(orchestrator.run, task_id)
     return {"task_id": task_id, "status": "queued"}
 
 
@@ -50,20 +116,79 @@ async def get_status(task_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+async def get_job_events(task_id: str, limit: int = 50) -> dict[str, Any]:
+    """Return recent append-only events for a task."""
+    events_path = orchestrator.store.events_path(task_id)
+    if not events_path.is_file():
+        raise ValueError("task not found")
+    events = []
+    for line in events_path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            events.append(json.loads(line))
+    return {"task_id": task_id, "events": events[-limit:]}
+
+
+@mcp.tool()
+async def list_capabilities() -> dict[str, Any]:
+    """List agent-facing workflows, required parameters, and safety defaults."""
+    return {
+        "workflows": [
+            {
+                "name": "generic_content_task",
+                "tools": ["run_task_async", "run_task_sync", "submit_task", "start_task"],
+                "content_types": [
+                    "anime",
+                    "finance",
+                    "ai_briefing",
+                    "ai_art",
+                    "grouped_anime",
+                    "japanese",
+                ],
+                "default_publish": False,
+                "notes": "Use run_task_async for long browser, video, or publishing jobs.",
+            },
+            {
+                "name": "photo_process_image_folder",
+                "tools": ["process_ai_art_async", "process_ai_art", "process_japanese_images"],
+                "lower_tool": photo_process_contract(settings),
+                "required_params": ["source_dir", "image_prompt"],
+                "safety": "Stage or copy source images before calling Photo-Process when originals must be preserved.",
+            },
+            {
+                "name": "finance_video",
+                "tools": ["run_finance_video_async"],
+                "content_type": "finance",
+                "default_publish": False,
+                "publishing": "Only Douyin and Kuaishou private publishing are supported for Finance.",
+            },
+        ],
+        "status_tools": ["get_status", "get_job_events", "list_jobs"],
+    }
+
+
+@mcp.tool()
+async def get_external_tool_contracts() -> dict[str, Any]:
+    """Return stable adapter contracts for lower-level local tools."""
+    return {"tools": [photo_process_contract(settings)]}
+
+
+@mcp.tool()
 async def run_task_sync(
     description: str,
     content_type: str | None = None,
     topic: str | None = None,
     publish: bool = False,
+    publish_targets: list[dict[str, Any]] | None = None,
     params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Submit and run a content pipeline task synchronously, returning the final snapshot."""
     try:
-        task = TaskInput(
+        task = _make_task(
             description=description,
             content_type=content_type,
             topic=topic,
             publish=publish,
+            publish_targets=publish_targets,
             params=params or {},
         )
         task_id = orchestrator.submit(task)
@@ -160,7 +285,7 @@ async def process_ai_art(
             content_type="ai_art",
             topic=title,
             publish=publish,
-            publish_targets=[PublishTarget(**t) for t in (publish_targets or [])],
+            publish_targets=_publish_targets(publish_targets),
             params=task_params,
         )
         task_id = orchestrator.submit(task)
@@ -168,6 +293,103 @@ async def process_ai_art(
         return orchestrator.store.get(task_id).model_dump(mode="json")
     except Exception as exc:
         return {"status": "failed", "error": str(exc)}
+
+
+@mcp.tool()
+async def process_ai_art_async(
+    source_dir: str,
+    image_prompt: str,
+    title: str,
+    source_files: list[str] | None = None,
+    archive_dir: str | None = None,
+    failed_dir: str | None = None,
+    group_size: int = 4,
+    description: str = "",
+    tags: list[str] | None = None,
+    publish: bool = False,
+    publish_targets: list[dict[str, Any]] | None = None,
+    params: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """Submit and start the AI-art Photo-Process folder pipeline asynchronously."""
+    task_params = {
+        "source_dir": source_dir,
+        "image_prompt": image_prompt,
+        "title": title,
+        "source_files": source_files or [],
+        "description": description,
+        "tags": tags or [],
+        "group_size": group_size,
+    }
+    if archive_dir is not None:
+        task_params["archive_dir"] = archive_dir
+    if failed_dir is not None:
+        task_params["failed_dir"] = failed_dir
+    if params:
+        task_params.update(params)
+
+    return _submit_and_start(
+        TaskInput(
+            description=f"AI Art: {title}",
+            content_type="ai_art",
+            topic=title,
+            publish=publish,
+            publish_targets=_publish_targets(publish_targets),
+            params=task_params,
+        )
+    )
+
+
+@mcp.tool()
+async def process_japanese_images(
+    source_dir: str,
+    image_prompt: str,
+    output_dir: str | None = None,
+    source_files: list[str] | None = None,
+    dry_run: bool = False,
+) -> dict[str, str]:
+    """Submit and start the Japanese local image pipeline backed by Photo-Process."""
+    params: dict[str, Any] = {
+        "source_dir": source_dir,
+        "image_prompt": image_prompt,
+        "source_files": source_files or [],
+        "dry_run": dry_run,
+    }
+    if output_dir is not None:
+        params["output_dir"] = output_dir
+    return _submit_and_start(
+        TaskInput(
+            description="Japanese local image processing",
+            content_type="japanese",
+            topic="Japanese local image processing",
+            publish=False,
+            params=params,
+        )
+    )
+
+
+@mcp.tool()
+async def run_finance_video_async(
+    date: str = "auto",
+    dry_run: bool = False,
+    publish: bool = False,
+    title: str | None = None,
+) -> dict[str, str]:
+    """Submit and start the dedicated Finance Markdown-to-video pipeline."""
+    params: dict[str, Any] = {
+        "date": date,
+        "dry_run": dry_run,
+    }
+    if title is not None:
+        params["title"] = title
+    return _submit_and_start(
+        TaskInput(
+            description="Finance daily video",
+            content_type="finance",
+            topic="Finance daily video",
+            publish=publish,
+            params=params,
+        )
+    )
 
 
 @mcp.tool()

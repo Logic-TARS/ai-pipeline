@@ -96,6 +96,24 @@ POST /run
 GET /status/{task_id}
 ```
 
+## Agent MCP Interface
+
+The MCP server is the preferred interface for Codex/Hermes-style agents:
+
+```powershell
+python -m content_pipeline.mcp_server
+```
+
+Use `list_capabilities` first to discover supported workflows and lower-tool contracts. For long browser, video, or publishing work, use `run_task_async` or a task-specific async tool, then poll `get_status` and inspect `get_job_events`.
+
+Task-specific MCP tools include:
+
+- `process_ai_art_async`: Photo-Process folder editing, gallery video creation, optional private publishing.
+- `process_japanese_images`: Photo-Process-backed local image editing; no video or upload.
+- `run_finance_video_async`: dedicated Finance Markdown-to-video workflow; Finance never enters the Gemini image flow.
+
+Lower tools should be connected through stable adapters. `Photo-Process` is exposed as a CLI JSON adapter through `main.py comic --image <path> --prompt <text> --json`; it owns Gemini browser automation, current-response candidate selection, and image validation. The parent pipeline should pass staged copies when originals must be preserved and should commit only validated artifacts.
+
 ## Private Upload Guard
 
 Real Bilibili upload is blocked unless `SAU_BILIBILI_PRIVATE_ARGS` is set after verifying the actual `biliup upload --help` supports a private/visibility argument. Dry runs never call SAU.

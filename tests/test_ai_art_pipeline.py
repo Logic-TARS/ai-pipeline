@@ -7,10 +7,15 @@ from PIL import Image
 
 from content_pipeline import ai_art_pipeline
 from content_pipeline.job_store import JobStore
-from content_pipeline.models import JobStatus, TaskInput, VideoValidation
+from content_pipeline.models import AdapterResult, ErrorCode, JobStatus, TaskInput, VideoValidation
 from content_pipeline.orchestrator import Orchestrator
 from content_pipeline.settings import Settings
-from content_pipeline.tools.photo_process_client import archive_source, call_photo_process, scan_source_images
+from content_pipeline.tools.photo_process_client import (
+    archive_source,
+    call_photo_process,
+    run_photo_process_adapter,
+    scan_source_images,
+)
 from content_pipeline.tools.slideshow_client import choose_bgm, render_slideshow
 
 
@@ -67,7 +72,138 @@ def test_call_photo_process_forces_utf8_subprocess_output(tmp_path: Path, monkey
     assert output.is_file()
 
 
-def test_call_photo_process_can_override_target_gem_name(tmp_path: Path, monkeypatch) -> None:
+def test_run_photo_process_adapter_returns_structured_result(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "source.png"
+    generated = tmp_path / "generated.png"
+    Image.new("RGB", (10, 12)).save(source)
+    Image.new("RGB", (10, 12)).save(generated)
+
+    def fake_run_command(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "success": True,
+                    "image_path": str(generated),
+                    "target_aspect_ratio": "3:4",
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("content_pipeline.tools.photo_process_client.run_command", fake_run_command)
+    settings = Settings(
+        photo_process_dir=tmp_path,
+        photo_process_python=tmp_path / "python.exe",
+    )
+    settings.photo_process_python.write_text("", encoding="utf-8")
+    (tmp_path / "main.py").write_text("", encoding="utf-8")
+
+    result = run_photo_process_adapter(
+        source=source,
+        prompt="日语风格",
+        output_path=tmp_path / "out" / "0001.png",
+        settings=settings,
+    )
+
+    assert result.ok is True
+    assert result.code == ErrorCode.OK
+    assert result.artifacts["processed_path"] == str(tmp_path / "out" / "0001.png")
+    assert result.artifacts["width"] == 10
+    assert result.artifacts["height"] == 12
+    assert result.artifacts["target_aspect_ratio"] == "3:4"
+    assert result.evidence["validation"]["count"] == 1
+    assert result.raw["photo_process_json"]["success"] is True
+
+
+def test_run_photo_process_adapter_maps_failure_json_to_error_code(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "source.png"
+    Image.new("RGB", (10, 10)).save(source)
+
+    def fake_run_command(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"success": False, "error": "bad source", "error_type": "input_error"}) + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("content_pipeline.tools.photo_process_client.run_command", fake_run_command)
+    settings = Settings(photo_process_dir=tmp_path, photo_process_python=tmp_path / "python.exe")
+    settings.photo_process_python.write_text("", encoding="utf-8")
+    (tmp_path / "main.py").write_text("", encoding="utf-8")
+
+    result = run_photo_process_adapter(
+        source=source,
+        prompt="日语风格",
+        output_path=tmp_path / "out" / "0001.png",
+        settings=settings,
+    )
+
+    assert result.ok is False
+    assert result.code == ErrorCode.INPUT_ERROR
+    assert result.message == "bad source"
+    assert result.raw["photo_process_json"]["error_type"] == "input_error"
+
+
+def test_run_photo_process_adapter_reports_no_output_without_final_json(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "source.png"
+    Image.new("RGB", (10, 10)).save(source)
+
+    def fake_run_command(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 0, stdout="not json\n", stderr="")
+
+    monkeypatch.setattr("content_pipeline.tools.photo_process_client.run_command", fake_run_command)
+    settings = Settings(photo_process_dir=tmp_path, photo_process_python=tmp_path / "python.exe")
+    settings.photo_process_python.write_text("", encoding="utf-8")
+    (tmp_path / "main.py").write_text("", encoding="utf-8")
+
+    result = run_photo_process_adapter(
+        source=source,
+        prompt="日语风格",
+        output_path=tmp_path / "out" / "0001.png",
+        settings=settings,
+    )
+
+    assert result.ok is False
+    assert result.code == ErrorCode.NO_OUTPUT
+    assert result.raw["stdout_tail"] == "not json\n"
+
+
+def test_run_photo_process_adapter_reports_validation_failure(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "source.png"
+    generated = tmp_path / "generated.txt"
+    Image.new("RGB", (10, 10)).save(source)
+    generated.write_text("not an image", encoding="utf-8")
+
+    def fake_run_command(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"success": True, "image_path": str(generated)}) + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("content_pipeline.tools.photo_process_client.run_command", fake_run_command)
+    settings = Settings(photo_process_dir=tmp_path, photo_process_python=tmp_path / "python.exe")
+    settings.photo_process_python.write_text("", encoding="utf-8")
+    (tmp_path / "main.py").write_text("", encoding="utf-8")
+
+    result = run_photo_process_adapter(
+        source=source,
+        prompt="日语风格",
+        output_path=tmp_path / "out" / "0001.png",
+        settings=settings,
+    )
+
+    assert result.ok is False
+    assert result.code == ErrorCode.VALIDATION_FAILED
+
+
+def test_call_photo_process_can_override_target_gem_name_and_url(tmp_path: Path, monkeypatch) -> None:
     source = tmp_path / "source.png"
     generated = tmp_path / "generated.png"
     Image.new("RGB", (10, 10)).save(source)
@@ -97,10 +233,12 @@ def test_call_photo_process_can_override_target_gem_name(tmp_path: Path, monkeyp
         output_path=tmp_path / "out" / "0001.png",
         settings=settings,
         target_gem_name="日语视觉化",
+        target_gem_url="https://gemini.google.com/gem/7aaa12067979",
     )
 
     command = captured["command"]
     assert command[command.index("--target-gem-name") + 1] == "日语视觉化"
+    assert command[command.index("--target-gem-url") + 1] == "https://gemini.google.com/gem/7aaa12067979"
 
 
 def test_choose_bgm_is_stable(tmp_path: Path) -> None:
@@ -141,12 +279,23 @@ def test_ai_art_skips_failed_image_regroups_and_archives_successes(tmp_path: Pat
     for name in ("1.png", "2.png", "3.png", "4.png", "5.png"):
         Image.new("RGB", (90, 160), color="blue").save(source_dir / name)
 
-    def fake_photo_process(*, source: Path, output_path: Path, **_kwargs) -> Path:
+    def fake_photo_process(*, source: Path, output_path: Path, **_kwargs) -> AdapterResult:
         if source.name == "2.png":
-            raise RuntimeError("image rejected")
+            return AdapterResult(
+                ok=False,
+                tool="Photo-Process",
+                code=ErrorCode.EXTERNAL_TOOL_FAILED,
+                message="image rejected",
+            )
         output_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, output_path)
-        return output_path
+        return AdapterResult(
+            ok=True,
+            tool="Photo-Process",
+            code=ErrorCode.OK,
+            artifacts={"processed_path": str(output_path)},
+            evidence={"validation": {"count": 1}},
+        )
 
     def fake_render(*, output: Path, **_kwargs) -> Path:
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -163,7 +312,7 @@ def test_ai_art_skips_failed_image_regroups_and_archives_successes(tmp_path: Pat
         decoded_video_frames=1,
         decoded_audio_frames=1,
     )
-    monkeypatch.setattr(ai_art_pipeline, "call_photo_process", fake_photo_process)
+    monkeypatch.setattr(ai_art_pipeline, "run_photo_process_adapter", fake_photo_process)
     monkeypatch.setattr(ai_art_pipeline, "render_slideshow", fake_render)
     monkeypatch.setattr(ai_art_pipeline, "validate_video", lambda *_args, **_kwargs: validation)
     monkeypatch.setattr(ai_art_pipeline, "choose_bgm", lambda *_args, **_kwargs: tmp_path / "music.mp3")
@@ -189,5 +338,9 @@ def test_ai_art_skips_failed_image_regroups_and_archives_successes(tmp_path: Pat
     assert len(snapshot.artifacts.images) == 4
     assert len(snapshot.artifacts.groups) == 1
     assert len(snapshot.artifacts.groups[0].processed_images) == 4
+    assert snapshot.artifacts.source_results[0].adapter_result is not None
+    assert snapshot.artifacts.source_results[0].adapter_result.code == ErrorCode.OK
+    assert snapshot.artifacts.source_results[1].adapter_result is not None
+    assert snapshot.artifacts.source_results[1].adapter_result.code == ErrorCode.EXTERNAL_TOOL_FAILED
     assert (source_dir / "2.png").is_file()
     assert len(list((source_dir / "已处理").glob("*.png"))) == 4

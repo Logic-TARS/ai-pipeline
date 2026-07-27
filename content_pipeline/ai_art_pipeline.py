@@ -16,7 +16,7 @@ from .models import (
     PipelineStep,
 )
 from .settings import Settings
-from .tools.photo_process_client import archive_source, call_photo_process, scan_source_images
+from .tools.photo_process_client import archive_source, run_photo_process_adapter, scan_source_images
 from .tools.sau_client import call_sau_target
 from .tools.slideshow_client import choose_bgm, render_slideshow
 
@@ -50,12 +50,16 @@ def run_ai_art_pipeline(
                 validate_images([record.processed_path], 1)
             else:
                 source = _available_source(record)
-                record.processed_path = call_photo_process(
+                adapter_result = run_photo_process_adapter(
                     source=source,
                     prompt=params.image_prompt,
                     output_path=job_dir / "processed" / f"{index:04d}.png",
                     settings=settings,
                 )
+                record.adapter_result = adapter_result
+                if not adapter_result.ok:
+                    raise RuntimeError(adapter_result.message or adapter_result.code.value)
+                record.processed_path = Path(str(adapter_result.artifacts["processed_path"]))
             if record.archived_path is None:
                 candidates = [Path(record.source_path)]
                 if record.failed_path:
@@ -168,4 +172,3 @@ def _available_source(record: AiArtSourceResult) -> Path:
         if candidate and Path(candidate).is_file():
             return Path(candidate)
     raise ConfigError(f"source image is unavailable: {record.source_path}")
-
