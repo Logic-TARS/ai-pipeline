@@ -95,10 +95,7 @@ def test_grouped_anime_calls_mpt_once_per_prefix_group(tmp_path: Path, monkeypat
     assert all(call["subtitle_enabled"] is False for call in calls)
     assert all(call["allow_cross_post"] is False for call in calls)
     assert all(call["topic"] == grouped_anime_pipeline.MPT_VISUAL_ONLY_PLACEHOLDER for call in calls)
-    assert all(
-        call["params"]["script"] == grouped_anime_pipeline.MPT_VISUAL_ONLY_PLACEHOLDER
-        for call in calls
-    )
+    assert all(call["params"]["script"] == grouped_anime_pipeline.MPT_VISUAL_ONLY_PLACEHOLDER for call in calls)
     assert snapshot.artifacts.upload_result == {"skipped": True, "reason": "publish_not_requested"}
 
 

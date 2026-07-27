@@ -1,7 +1,5 @@
 from pathlib import Path
 
-import pytest
-
 from content_pipeline.grouping import group_by_prefix
 
 

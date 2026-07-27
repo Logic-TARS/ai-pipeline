@@ -5,3 +5,13 @@ __pycache__/
 output/
 .codegraph/
 ai_popline.egg-info/
+data/
+nul
+stdin.txt
+test-images-integration/
+.env
+.coverage
+htmlcov/
+dist/
+build/
+*.log

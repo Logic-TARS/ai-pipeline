@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from content_pipeline.errors import ConfigError
 from content_pipeline.job_store import JobStore
 from content_pipeline.mcp_server import (
     generate_images,
@@ -474,7 +475,7 @@ def test_generate_images_invalid_content_type(tmp_path: Path) -> None:
     try:
         mcp_mod.settings = settings
 
-        with pytest.raises(Exception):
+        with pytest.raises(ConfigError):
             asyncio.run(
                 generate_images(
                     prompt="测试",

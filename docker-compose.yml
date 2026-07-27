@@ -2,11 +2,13 @@ services:
   ai-popline:
     build: .
     ports:
-      - "8080:8080"
+      - "${API_PORT:-8080}:8080"
     env_file:
       - .env
     volumes:
       - ./output:/data
-      - G:\Job\gemini-skill:G:\Job\gemini-skill
-      - G:\Job\MoneyPrinterTurbo:G:\Job\MoneyPrinterTurbo
-      - G:\Job\social-auto-upload:G:\Job\social-auto-upload
+      - ./profiles:/app/profiles:ro
+      - ${GEMINI_SKILL_DIR:-/opt/gemini-skill}:${GEMINI_SKILL_DIR:-/opt/gemini-skill}:ro
+      - ${MPT_DIR:-/opt/mpt}:${MPT_DIR:-/opt/mpt}:ro
+      - ${PHOTO_PROCESS_DIR:-/opt/photo-process}:${PHOTO_PROCESS_DIR:-/opt/photo-process}:ro
+      - ${SAU_DIR:-/opt/sau}:${SAU_DIR:-/opt/sau}:ro

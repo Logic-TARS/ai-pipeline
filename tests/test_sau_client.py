@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from content_pipeline.errors import ExternalToolError, PrivateVisibilityUnsupported
+from content_pipeline.errors import ExternalToolError, PrivateVisibilityUnsupportedError
 from content_pipeline.models import PublishTarget
 from content_pipeline.profiles import UploadProfile
 from content_pipeline.settings import Settings
@@ -50,10 +50,11 @@ def test_kuaishou_requires_private_and_success_proof(tmp_path: Path, monkeypatch
 
     def fake_run_command(command, **kwargs):
         import subprocess
+
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="视频发布成功", stderr="")
 
     monkeypatch.setattr("content_pipeline.tools.sau_client.run_command", fake_run_command)
-    with pytest.raises(PrivateVisibilityUnsupported, match="Kuaishou"):
+    with pytest.raises(PrivateVisibilityUnsupportedError, match="Kuaishou"):
         call_sau_target(
             target=PublishTarget(platform="kuaishou", account="破壁人"),
             video=video,
@@ -123,10 +124,11 @@ def test_tencent_target_requires_draft_success_proof(tmp_path: Path, monkeypatch
 
     def fake_run_command(command, **kwargs):
         import subprocess
+
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="saved", stderr="")
 
     monkeypatch.setattr("content_pipeline.tools.sau_client.run_command", fake_run_command)
-    with pytest.raises(PrivateVisibilityUnsupported, match="Tencent"):
+    with pytest.raises(PrivateVisibilityUnsupportedError, match="Tencent"):
         call_sau_target(
             target=PublishTarget(platform="tencent", account="破壁人Wallbreaker"),
             video=video,
@@ -143,6 +145,7 @@ def test_tencent_target_returns_draft_delivery_status(tmp_path: Path, monkeypatc
 
     def fake_run_command(command, **kwargs):
         import subprocess
+
         return subprocess.CompletedProcess(
             args=command,
             returncode=0,
@@ -187,11 +190,12 @@ def test_real_upload_requires_private_args(tmp_path: Path, monkeypatch) -> None:
         nonlocal captured_command
         captured_command = command
         import subprocess
+
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="uploaded", stderr="")
 
     monkeypatch.setattr("content_pipeline.tools.sau_client.run_command", fake_run_command)
 
-    with pytest.raises(PrivateVisibilityUnsupported, match="--is-only-self 1"):
+    with pytest.raises(PrivateVisibilityUnsupportedError, match="--is-only-self 1"):
         call_sau_upload(
             profile=UploadProfile(account="default", tid=249, visibility="private"),
             topic="topic",
@@ -211,6 +215,7 @@ def test_real_bilibili_upload_passes_verified_private_flag(tmp_path: Path, monke
         nonlocal captured_command
         captured_command = command
         import subprocess
+
         return subprocess.CompletedProcess(args=command, returncode=0, stdout="uploaded", stderr="")
 
     monkeypatch.setattr("content_pipeline.tools.sau_client.run_command", fake_run_command)

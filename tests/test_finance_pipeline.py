@@ -19,7 +19,6 @@ from content_pipeline.orchestrator import Orchestrator
 from content_pipeline.settings import Settings
 from content_pipeline.tools.finance_mpt_client import call_finance_mpt
 
-
 SAMPLE_MD = """# Cron Job: 每日基金日报
 
 ## Prompt
@@ -143,8 +142,7 @@ def test_builds_script_from_summary_table_without_path_leakage() -> None:
 
 def test_rejects_path_only_or_insufficient_response() -> None:
     response = extract_response(
-        "# Cron Job: 每日基金日报\n\n## Response\n\n"
-        "报告已保存。文件路径：`~/hermes/sajin-daily-reports/report.md`"
+        "# Cron Job: 每日基金日报\n\n## Response\n\n报告已保存。文件路径：`~/hermes/sajin-daily-reports/report.md`"
     )
     with pytest.raises(ConfigError, match="350-500"):
         build_90_second_script(response, "2026-07-20")
@@ -161,15 +159,17 @@ def test_finance_orchestrator_skips_gemini_and_generates_dry_run(tmp_path: Path,
         mpt_dir=tmp_path / "mpt",
     )
     monkeypatch.setattr(
-        "content_pipeline.orchestrator.call_gemini_skill",
+        "content_pipeline.pipelines.anime.call_gemini_skill",
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("Gemini must not be called for finance")),
     )
     orchestrator = Orchestrator(settings=settings, store=JobStore(settings.data_dir))
-    task_id = orchestrator.submit(TaskInput(
-        description="生成每日金融视频",
-        content_type="finance",
-        params={"date": "2026-07-16", "dry_run": True},
-    ))
+    task_id = orchestrator.submit(
+        TaskInput(
+            description="生成每日金融视频",
+            content_type="finance",
+            params={"date": "2026-07-16", "dry_run": True},
+        )
+    )
     orchestrator.run(task_id)
     snapshot = orchestrator.store.get(task_id)
     assert snapshot.status == JobStatus.SUCCEEDED
@@ -183,8 +183,7 @@ def test_finance_orchestrator_rejects_bad_response_before_mpt_or_upload(tmp_path
     source_dir = tmp_path / "fund-daily"
     source_dir.mkdir()
     (source_dir / "2026-07-20_18-00-00.md").write_text(
-        "# Cron Job: 每日基金日报\n\n## Response\n\n"
-        "报告已保存。文件路径：`~/hermes/sajin-daily-reports/report.md`",
+        "# Cron Job: 每日基金日报\n\n## Response\n\n报告已保存。文件路径：`~/hermes/sajin-daily-reports/report.md`",
         encoding="utf-8",
     )
     settings = Settings(data_dir=tmp_path / "output", finance_md_dir=source_dir, mpt_dir=tmp_path / "mpt")
@@ -197,12 +196,14 @@ def test_finance_orchestrator_rejects_bad_response_before_mpt_or_upload(tmp_path
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("upload must not be called")),
     )
     orchestrator = Orchestrator(settings=settings, store=JobStore(settings.data_dir))
-    task_id = orchestrator.submit(TaskInput(
-        description="生成并发布每日金融视频",
-        content_type="finance",
-        publish=True,
-        params={"date": "2026-07-20", "dry_run": True},
-    ))
+    task_id = orchestrator.submit(
+        TaskInput(
+            description="生成并发布每日金融视频",
+            content_type="finance",
+            publish=True,
+            params={"date": "2026-07-20", "dry_run": True},
+        )
+    )
     orchestrator.run(task_id)
     snapshot = orchestrator.store.get(task_id)
     assert snapshot.status == JobStatus.FAILED
@@ -225,12 +226,14 @@ def test_finance_publish_targets_are_independent(tmp_path: Path, monkeypatch) ->
 
     monkeypatch.setattr("content_pipeline.finance_pipeline.call_sau_target", fake_upload)
     orchestrator = Orchestrator(settings=settings, store=JobStore(settings.data_dir))
-    task_id = orchestrator.submit(TaskInput(
-        description="生成并发布每日金融视频",
-        content_type="finance",
-        publish=True,
-        params={"date": "2026-07-16", "dry_run": True},
-    ))
+    task_id = orchestrator.submit(
+        TaskInput(
+            description="生成并发布每日金融视频",
+            content_type="finance",
+            publish=True,
+            params={"date": "2026-07-16", "dry_run": True},
+        )
+    )
     orchestrator.run(task_id)
     snapshot = orchestrator.store.get(task_id)
     assert snapshot.status == JobStatus.PARTIAL

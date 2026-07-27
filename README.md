@@ -1,5 +1,31 @@
 # AI Popline Content Pipeline
 
+AI content production pipeline orchestrating Gemini, Photo-Process, MoneyPrinterTurbo, and social-auto-upload across 6 content pipelines.
+
+📖 **[Full Documentation](docs/)** — architecture, agent interface, testing, publishing
+
+## Quick Start
+
+```powershell
+# Install dependencies
+uv sync
+
+# Copy and edit environment config
+copy .env.example .env
+# Edit .env with your local tool paths
+
+# Check your environment
+ai-popline doctor
+
+# List available pipelines
+ai-popline capabilities
+
+# Run a dry-run example
+python -m content_pipeline.orchestrator --task task.example.json
+```
+
+## Overview
+
 This project orchestrates three local tools into a deterministic content pipeline:
 
 1. Route a task to a content profile.

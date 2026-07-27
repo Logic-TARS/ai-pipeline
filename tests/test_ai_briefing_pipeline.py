@@ -6,11 +6,11 @@ from pathlib import Path
 import pytest
 
 from content_pipeline.ai_briefing_pipeline import (
+    _sau_file_hash,
     acquire_run_lock,
     build_90_second_briefing_script,
     build_publish_title,
     build_video_title,
-    _sau_file_hash,
     normalize_date,
     normalize_handoff,
     release_run_lock,
@@ -19,7 +19,6 @@ from content_pipeline.job_store import JobStore
 from content_pipeline.models import JobStatus, TaskInput
 from content_pipeline.orchestrator import Orchestrator
 from content_pipeline.settings import Settings
-
 
 SAMPLE_ARTICLE = """---
 标题: 国产模型集中亮相

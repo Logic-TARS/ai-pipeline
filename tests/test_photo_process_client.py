@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from PIL import Image
 import pytest
+from PIL import Image
 
 from content_pipeline.errors import ExternalToolError
 from content_pipeline.models import ErrorCode
@@ -65,7 +65,9 @@ def test_photo_process_adapter_maps_classified_browser_failures(error_type: str,
     assert photo_process_client._error_code_from_payload({"error_type": error_type}) == expected
 
 
-def test_photo_process_worker_adapter_reuses_local_browser_worker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_photo_process_worker_adapter_reuses_local_browser_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     source = tmp_path / "source.jpg"
     generated = tmp_path / "worker.jpg"
     Image.new("RGB", (90, 160), color="blue").save(source)
