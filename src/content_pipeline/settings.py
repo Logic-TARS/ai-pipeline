@@ -24,6 +24,10 @@ class Settings(BaseSettings):
         default=Path("profiles"),
         validation_alias=AliasChoices("PROFILES_DIR", "PIPELINE_PROFILES_DIR"),
     )
+    pipeline_defaults_file: Path = Field(
+        default=Path("config/pipeline.defaults.yaml"),
+        validation_alias=AliasChoices("PIPELINE_DEFAULTS_FILE", "PIPELINE_CONFIG_FILE"),
+    )
 
     # Gemini
     gemini_skill_dir: Path = Path(r"G:\Job\gemini-skill")

@@ -10,6 +10,7 @@ from . import pipelines  # noqa: F401
 from .errors import PipelineError, PrivateVisibilityUnsupportedError, UnknownContentTypeError
 from .job_store import JobStore
 from .models import ArtifactSet, JobStatus, PipelineStep, TaskInput
+from .pipeline_config import apply_pipeline_defaults
 from .pipelines.registry import PipelineContext, get_pipeline
 from .router import route_task
 from .settings import Settings, load_settings
@@ -29,6 +30,7 @@ class Orchestrator:
             snapshot = self.store.mark_running(task_id, PipelineStep.ROUTE)
             artifacts = snapshot.artifacts
             route = route_task(snapshot.task, self.settings)
+            route = apply_pipeline_defaults(route, settings=self.settings, task_id=task_id)
             self.store.set_route(task_id, route)
             if route.content_type == "unknown":
                 raise UnknownContentTypeError("unknown content type; no profile selected")
