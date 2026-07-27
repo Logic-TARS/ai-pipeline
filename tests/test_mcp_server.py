@@ -14,6 +14,7 @@ from content_pipeline.mcp_server import (
     list_capabilities,
     list_jobs,
     list_profiles,
+    open_photo_process_debug,
     process_ai_art,
     process_ai_art_async,
     process_japanese_images,
@@ -321,18 +322,54 @@ def test_list_capabilities_describes_agent_workflows() -> None:
     assert "photo_process_image_folder" in workflow_names
     assert "finance_video" in workflow_names
     assert "get_status" in result["status_tools"]
+    assert "open_photo_process_debug" in result["diagnostic_tools"]
     photo_workflow = next(
         workflow for workflow in result["workflows"] if workflow["name"] == "photo_process_image_folder"
     )
-    assert photo_workflow["lower_tool"]["boundary"] == "CLI JSON adapter"
+    assert "CLI JSON adapter" in photo_workflow["lower_tool"]["boundary"]
+    assert "Browser Worker" in photo_workflow["lower_tool"]["boundary"]
+    assert photo_workflow["lower_tool"]["foreground_debug"]["mcp_tool"] == "open_photo_process_debug"
 
 
 def test_get_external_tool_contracts_returns_photo_process_contract() -> None:
     result = asyncio.run(get_external_tool_contracts())
 
     assert result["tools"][0]["name"] == "Photo-Process"
-    assert result["tools"][0]["boundary"] == "CLI JSON adapter"
+    assert "CLI JSON adapter" in result["tools"][0]["boundary"]
+    assert "Browser Worker" in result["tools"][0]["boundary"]
     assert "--json" in result["tools"][0]["command"]
+    assert result["tools"][0]["foreground_debug"]["cli"].startswith("python -m content_pipeline.diagnostics")
+    assert result["tools"][0]["foreground_debug"]["desktop_cli"].startswith("python -m content_pipeline.diagnostics")
+    assert result["tools"][0]["foreground_debug"]["install_desktop_helper_task"].endswith(
+        "install_desktop_browser_helper_task.ps1"
+    )
+    assert result["tools"][0]["foreground_debug"]["uninstall_desktop_helper_task"].endswith(
+        "uninstall_desktop_browser_helper_task.ps1"
+    )
+
+
+def test_open_photo_process_debug_returns_adapter_result(monkeypatch) -> None:
+    import content_pipeline.mcp_server as mcp_mod
+
+    def fake_open(*, settings, url, mode, desktop_helper_url):
+        from content_pipeline.models import AdapterResult, ErrorCode
+
+        return AdapterResult(
+            ok=True,
+            tool="Photo-Process foreground debug",
+            code=ErrorCode.OK,
+            artifacts={"snapshot_path": "logs/frontend_dom_snapshot.json"},
+            evidence={"command": ["python", "启动调试浏览器.py", url], "mode": mode},
+        )
+
+    monkeypatch.setattr(mcp_mod, "open_photo_process_debug_browser", fake_open)
+
+    result = asyncio.run(open_photo_process_debug("https://gemini.google.com/app", mode="desktop"))
+
+    assert result["ok"] is True
+    assert result["code"] == "OK"
+    assert result["evidence"]["mode"] == "desktop"
+    assert result["artifacts"]["snapshot_path"].endswith("frontend_dom_snapshot.json")
 
 
 # ---------------------------------------------------------------------------
@@ -605,6 +642,7 @@ def test_process_japanese_images_builds_photo_process_task(tmp_path: Path) -> No
                 output_dir=str(tmp_path / "output"),
                 image_prompt="日语视觉化",
                 source_files=["one.png"],
+                target_gem_url="https://gemini.google.com/gem/f306c82a8105",
                 dry_run=True,
             )
         )
@@ -613,6 +651,7 @@ def test_process_japanese_images_builds_photo_process_task(tmp_path: Path) -> No
         assert snapshot.task.publish is False
         assert snapshot.task.params["source_files"] == ["one.png"]
         assert snapshot.task.params["output_dir"] == str(tmp_path / "output")
+        assert snapshot.task.params["target_gem_url"] == "https://gemini.google.com/gem/f306c82a8105"
         assert fake_executor.calls[0][1] == (result["task_id"],)
     finally:
         mcp_mod.orchestrator = original_orch

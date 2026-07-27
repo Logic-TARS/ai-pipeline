@@ -53,6 +53,7 @@ Primary agent-facing MCP tools:
 | `start_task` | Start a previously queued task by id. | `{ "task_id": "...", "status": "queued" }` or the existing status |
 | `get_status` | Read the current persisted `JobSnapshot`. | `JobSnapshot` JSON |
 | `get_job_events` | Read recent append-only events for a task. | `{ "task_id": "...", "events": [...] }` |
+| `open_photo_process_debug` | Open Photo-Process' own foreground Gemini debug browser for human inspection. | `AdapterResult` JSON |
 | `process_ai_art_async` | Submit and start the AI-art Photo-Process folder pipeline. | `{ "task_id": "...", "status": "queued" }` |
 | `process_japanese_images` | Submit and start the Japanese local image pipeline. | `{ "task_id": "...", "status": "queued" }` |
 | `run_finance_video_async` | Submit and start the dedicated Finance Markdown-to-video pipeline. | `{ "task_id": "...", "status": "queued" }` |
@@ -103,6 +104,56 @@ python -m content_pipeline.orchestrator --task <task.json>
 The CLI reads the JSON file as `TaskInput`, submits it, runs it, prints the final
 `JobSnapshot` as JSON, and exits with code `0` for `succeeded` or `partial`.
 Other final statuses return a non-zero exit code.
+
+Open Photo-Process' foreground debug browser:
+
+```powershell
+python -m content_pipeline.diagnostics photo-debug --mode automation --url <gemini-or-gem-url>
+```
+
+This diagnostic command does not create or update an AI Popline job. It returns
+an `AdapterResult` JSON envelope and exits with code `0` only if the debug
+process was launched.
+
+For a user-visible desktop window, first start the localhost helper from the
+Windows desktop session:
+
+```powershell
+python -m content_pipeline.desktop_browser_helper
+```
+
+Then call:
+
+```powershell
+python -m content_pipeline.diagnostics photo-debug --mode desktop --url <gemini-or-gem-url>
+```
+
+Agents that need a script-only setup path may register the helper as a Windows
+scheduled task instead of asking the user to open the helper manually:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install_desktop_browser_helper_task.ps1
+```
+
+The installer does not open Chrome or navigate to Gemini. It only registers
+`AI Popline Desktop Browser Helper` to run at user logon in the interactive
+Windows session. To request an immediate helper start without opening a browser:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install_desktop_browser_helper_task.ps1 -StartNow
+```
+
+Verify the helper before using desktop mode:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8767/health
+```
+
+Remove the scheduled task with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\uninstall_desktop_browser_helper_task.ps1
+```
 
 ## Core Data Structures
 
@@ -279,8 +330,15 @@ persist in `JobSnapshot`.
 
 ## Photo-Process Adapter Contract
 
-The current Photo-Process boundary is a CLI JSON adapter. The orchestrator calls
-the adapter through `content_pipeline.tools.photo_process_client`.
+The default Photo-Process boundary is a CLI JSON adapter. When the trusted-local
+`PHOTO_PROCESS_WORKER_URL` is configured, the orchestrator instead calls that
+Photo-Process Browser Worker's `POST /api/comic` endpoint. Both paths return the
+same final Photo-Process JSON payload and are normalized by
+`content_pipeline.tools.photo_process_client`.
+
+The Worker path is preferred for real browser work: it serializes requests for one
+production Chrome profile and reuses one persistent Playwright context. The Worker
+must remain on localhost; callers must not expose it publicly.
 
 Photo-Process now implements the standardized `AdapterResult` envelope. The
 legacy `call_photo_process(...) -> Path` helper remains as a compatibility
@@ -351,6 +409,81 @@ Caller rules:
 The adapter may return an existing matching output file if it already validates.
 Agents should therefore use the job snapshot and validation metadata, not command
 execution alone, as completion evidence.
+
+### Photo-Process Foreground and Background Modes
+
+Photo-Process already owns the browser visibility contract. AI Popline callers
+must not bypass the adapter by launching Chrome directly to inspect Gemini.
+
+Current Photo-Process settings:
+
+- `show_chrome=true` means the lower tool launches Chrome in foreground mode.
+- `show_chrome=false` means the lower tool runs through the corresponding
+  headless/background mode.
+- `headless` is a compatibility mirror of `show_chrome`; callers should treat
+  `show_chrome` as the operator-facing switch.
+
+Current Photo-Process foreground inspection entrypoints:
+
+```powershell
+python main.py ask <image> <prompt>
+python 启动调试浏览器.py "https://gemini.google.com/gem/..."
+```
+
+Contract rules for AI Popline agents:
+
+- Normal pipeline execution uses the configured local Browser Worker when
+  `PHOTO_PROCESS_WORKER_URL` is set; otherwise it uses the compatibility CLI JSON
+  adapter (`main.py comic --json`). Both paths persist the returned `AdapterResult`.
+- If a human needs to watch or manually inspect Gemini, stop treating that as an
+  AI Popline adapter action and use Photo-Process foreground inspection
+  entrypoints instead.
+- Do not use external Chrome process launches as completion evidence. They may
+  create background processes without a visible desktop window and do not prove
+  that the Photo-Process adapter contract ran.
+- A visible Gemini page is diagnostic evidence only. Job success still requires
+  the adapter JSON result plus parent-job artifact validation.
+
+AI Popline exposes the same foreground inspection path as a diagnostic wrapper:
+
+```powershell
+python -m content_pipeline.diagnostics photo-debug --mode automation --url <gemini-or-gem-url>
+```
+
+The wrapper validates the Photo-Process directory, Python executable, and debug
+script, checks whether the configured Chrome profile is already in use, launches
+`启动调试浏览器.py`, and returns an `AdapterResult` with the command, PID when
+available, visible-window probe results, and
+`logs/frontend_dom_snapshot.json`. If the profile is already in use, it reports
+a failure result and does not close or kill the existing browser process.
+
+There are two debug modes:
+
+- `automation`: runs Photo-Process' Playwright debug script. This can update
+  `logs/frontend_dom_snapshot.json` even when the launched Chrome is not visible
+  in the user's desktop session. If no visible Chrome window is detected, the
+  wrapper returns `VALIDATION_FAILED` instead of success.
+- `desktop`: calls a user-started localhost helper at `127.0.0.1:8767` to open a
+  normal visible Chrome window in the user's desktop session. If the helper is
+  not running, the wrapper returns `DESKTOP_HELPER_UNAVAILABLE`.
+
+The desktop helper can also be installed by script as a scheduled task:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install_desktop_browser_helper_task.ps1
+```
+
+This is the preferred script-only path for agents. A script launched from a
+background agent session must not directly launch Chrome and claim that it
+opened a visible browser, because Windows may create a Chrome process with no
+visible desktop window. The scheduled task exists to move the helper process
+into the user's interactive logon session; actual page opening still happens
+later through `photo-debug --mode desktop`.
+
+When a requested `/gem/<id>` URL lands on `https://gemini.google.com/app` in the
+snapshot, the wrapper returns `GEM_ACCESS_FAILED`. That means the current
+profile did not enter the requested Gem and the caller should not treat the Gem
+URL as usable evidence.
 
 Standardized success result:
 
@@ -466,6 +599,11 @@ Recommended shared codes:
 | `PRIVATE_VISIBILITY_UNSUPPORTED` | Upload target cannot prove private visibility. |
 | `PUBLISH_FAILED` | Upload attempted but did not produce success evidence. |
 | `ALREADY_PUBLISHED` | Deduplication found a prior successful upload for the artifact. |
+| `DESKTOP_HELPER_UNAVAILABLE` | Foreground desktop helper is not reachable on localhost. |
+| `AUTH_REQUIRED` | The production browser profile exposes a Google sign-in control; a chat textbox alone is not authentication evidence. |
+| `BROWSER_BUSY` | Another process or task owns the production browser profile. |
+| `GEM_ACCESS_FAILED` | Requested Gemini Gem URL did not remain accessible in the current profile. |
+| `UI_CHANGED` | Required Gemini control is absent or its supported selectors no longer match. |
 | `TIMEOUT` | Adapter exceeded its allowed runtime. |
 
 Until this taxonomy is implemented end to end, callers should continue reading

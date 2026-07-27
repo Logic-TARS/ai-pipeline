@@ -20,6 +20,9 @@ class Settings:
         "PHOTO_PROCESS_PYTHON",
         r"G:\Job\Photo-Process\.venv311\Scripts\python.exe",
     )
+    # Optional localhost Photo-Process Browser Worker endpoint. Empty keeps the
+    # legacy one-shot CLI adapter for backwards compatibility.
+    photo_process_worker_url: str = os.getenv("PHOTO_PROCESS_WORKER_URL", "")
     mpt_dir: Path = _env_path("MPT_DIR", r"G:\Job\MoneyPrinterTurbo")
     mpt_python: Path = _env_path(
         "MPT_PYTHON",

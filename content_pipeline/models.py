@@ -41,6 +41,11 @@ class ErrorCode(str, Enum):
     PRIVATE_VISIBILITY_UNSUPPORTED = "PRIVATE_VISIBILITY_UNSUPPORTED"
     PUBLISH_FAILED = "PUBLISH_FAILED"
     ALREADY_PUBLISHED = "ALREADY_PUBLISHED"
+    DESKTOP_HELPER_UNAVAILABLE = "DESKTOP_HELPER_UNAVAILABLE"
+    AUTH_REQUIRED = "AUTH_REQUIRED"
+    BROWSER_BUSY = "BROWSER_BUSY"
+    GEM_ACCESS_FAILED = "GEM_ACCESS_FAILED"
+    UI_CHANGED = "UI_CHANGED"
     TIMEOUT = "TIMEOUT"
 
 
@@ -91,7 +96,10 @@ class JapaneseParams(BaseModel):
     source_dir: Path
     output_dir: Path | None = None
     source_files: list[str] = Field(default_factory=list)
-    image_prompt: str = Field(min_length=1)
+    # The current 日语视觉化 Gem is image-only: upload the image and submit
+    # without typing extra prompt text unless a caller explicitly supplies one.
+    image_prompt: str = ""
+    target_gem_url: str | None = None
     dry_run: bool = False
 
 

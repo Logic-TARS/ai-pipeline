@@ -12,6 +12,7 @@ from mcp.server import FastMCP
 
 from .models import TaskInput, PublishTarget, JobSnapshot, JobStatus
 from .orchestrator import Orchestrator
+from .photo_process_debug import open_photo_process_debug as open_photo_process_debug_browser
 from .profiles import load_profile
 from .settings import load_settings
 from .tools.gemini_client import call_gemini_skill
@@ -163,6 +164,7 @@ async def list_capabilities() -> dict[str, Any]:
             },
         ],
         "status_tools": ["get_status", "get_job_events", "list_jobs"],
+        "diagnostic_tools": ["open_photo_process_debug"],
     }
 
 
@@ -170,6 +172,21 @@ async def list_capabilities() -> dict[str, Any]:
 async def get_external_tool_contracts() -> dict[str, Any]:
     """Return stable adapter contracts for lower-level local tools."""
     return {"tools": [photo_process_contract(settings)]}
+
+
+@mcp.tool()
+async def open_photo_process_debug(
+    url: str | None = None,
+    mode: str = "automation",
+    desktop_helper_url: str = "http://127.0.0.1:8767",
+) -> dict[str, Any]:
+    """Open Photo-Process' own foreground Gemini debug browser for human inspection."""
+    return open_photo_process_debug_browser(
+        settings=settings,
+        url=url,
+        mode=mode,  # type: ignore[arg-type]
+        desktop_helper_url=desktop_helper_url,
+    ).model_dump(mode="json")
 
 
 @mcp.tool()
@@ -342,9 +359,10 @@ async def process_ai_art_async(
 @mcp.tool()
 async def process_japanese_images(
     source_dir: str,
-    image_prompt: str,
+    image_prompt: str = "",
     output_dir: str | None = None,
     source_files: list[str] | None = None,
+    target_gem_url: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, str]:
     """Submit and start the Japanese local image pipeline backed by Photo-Process."""
@@ -356,6 +374,8 @@ async def process_japanese_images(
     }
     if output_dir is not None:
         params["output_dir"] = output_dir
+    if target_gem_url is not None:
+        params["target_gem_url"] = target_gem_url
     return _submit_and_start(
         TaskInput(
             description="Japanese local image processing",

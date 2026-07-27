@@ -69,7 +69,7 @@ Edit `task.japanese.example.json` so `params.source_dir` points to a folder cont
 python -m content_pipeline.orchestrator --task task.japanese.example.json
 ```
 
-Images are scanned from the top level in natural filename order, or restricted to filenames in optional `source_files`. Photo-Process receives `image_prompt`; successful outputs are saved as stable numbered image files in `params.output_dir`, defaulting to `source_dir/日语改图`. Original source images are preserved. This pipeline stops after local image validation and ignores publishing.
+Images are scanned from the top level in natural filename order, or restricted to filenames in optional `source_files`. The current `日语视觉化` Gem is image-only: by default the pipeline opens `https://gemini.google.com/gem/f306c82a8105`, uploads each image, and submits without typing extra prompt text (`image_prompt` may be an empty string). Successful outputs are saved as stable numbered image files in `params.output_dir`, defaulting to `source_dir/日语改图`. Original source images are preserved. This pipeline stops after local image validation and ignores publishing.
 
 ## Run the Grouped Anime MPT Pipeline
 

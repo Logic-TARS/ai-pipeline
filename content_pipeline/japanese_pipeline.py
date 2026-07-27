@@ -18,7 +18,7 @@ from .settings import Settings
 from .tools.photo_process_client import run_photo_process_adapter, scan_source_images
 
 JAPANESE_TARGET_GEM_NAME = "日语视觉化"
-JAPANESE_TARGET_GEM_URL = "https://gemini.google.com/gem/7aaa12067979"
+JAPANESE_TARGET_GEM_URL = "https://gemini.google.com/gem/f306c82a8105"
 
 
 def run_japanese_pipeline(
@@ -64,8 +64,17 @@ def run_japanese_pipeline(
                     output_path=output_path,
                     settings=settings,
                     target_gem_name=JAPANESE_TARGET_GEM_NAME,
-                    target_gem_url=JAPANESE_TARGET_GEM_URL,
+                    target_gem_url=params.target_gem_url or JAPANESE_TARGET_GEM_URL,
                 )
+                if not adapter_result.ok and adapter_result.code.value == "GEM_ACCESS_FAILED":
+                    adapter_result = run_photo_process_adapter(
+                        source=staged_source,
+                        prompt=params.image_prompt,
+                        output_path=output_path,
+                        settings=settings,
+                        target_gem_name=JAPANESE_TARGET_GEM_NAME,
+                        target_gem_url=None,
+                    )
                 record.adapter_result = adapter_result
                 if not adapter_result.ok:
                     raise RuntimeError(adapter_result.message or adapter_result.code.value)
