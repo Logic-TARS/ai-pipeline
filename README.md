@@ -21,7 +21,7 @@ ai-popline doctor
 ai-popline capabilities
 
 # Run a dry-run example
-python -m content_pipeline.orchestrator --task task.example.json
+ai-popline run --task examples/tasks/dry-run/task.example.json
 ```
 
 ## Overview
@@ -44,7 +44,7 @@ Real tasks stop after producing and validating the local video unless `publish: 
 The first-class `ai_briefing` pipeline reads today's handoff, Markdown, and text from `G:\Hermes-Output\每日AI简报\YYYYMMDD`. It deterministically compresses the briefing to 350–500 Chinese characters, derives a complete in-video subject capped at 16 characters, calls MoneyPrinterTurbo with Pexels material, a 9:16 aspect ratio, `zh-CN-YunxiNeural`, and subtitles, then validates the video, audio, and spoken subtitles. It never falls back to an older date.
 
 ```powershell
-python -m content_pipeline.orchestrator --task task.ai-briefing.example.json
+ai-popline run --task examples/tasks/local/task.ai-briefing.example.json
 ```
 
 Real output remains compatible with the handoff directory as `video\briefing.mp4`, `video\briefing.srt`, `video_status.json`, and `handoff_index.jsonl`. MPT tasks use the deterministic id `ai-briefing-YYYYMMDD` and are reused only when the narration and source hashes match.
@@ -56,7 +56,7 @@ The scheduled publish task is installed with `scripts\register_daily_ai_briefing
 Finance tasks use the newest Markdown for today, or yesterday when today's file is absent, from `G:\Job\Automation-Output\sajin\fund-daily`. The pipeline reads only the `## Response` section, accepts structured headings or the compact module-summary table emitted by the local archive, and builds a 350–500 character narration for a roughly 90-second video. A path-only handoff or an undersized script fails during source scanning before MoneyPrinterTurbo or either uploader can run. Valid input calls MoneyPrinterTurbo directly with Pexels material, a 9:16 aspect ratio, Chinese voiceover, and subtitles. Finance tasks do not call Gemini.
 
 ```powershell
-python -m content_pipeline.orchestrator --task task.finance.example.json
+ai-popline run --task examples/tasks/local/task.finance.example.json
 ```
 
 With `publish: false`, the validated video remains local. With explicit `publish: true`, the default targets are Douyin account `金融破壁人` and Kuaishou account `破壁人`. Both uploaders must prove `仅自己可见` and successful publication; otherwise that target fails while the other target continues. Finance tasks do not publish to Bilibili.
@@ -64,23 +64,23 @@ With `publish: false`, the validated video remains local. With explicit `publish
 ## Run a Dry Run
 
 ```powershell
-python -m content_pipeline.orchestrator --task task.example.json
+ai-popline run --task examples/tasks/dry-run/task.example.json
 ```
 
 ## Run Real Generation Without Uploading
 
 ```powershell
-python -m content_pipeline.orchestrator --task task.real.example.json
+ai-popline run --task examples/tasks/local/task.real.example.json
 ```
 
 The real run uses the configured Gemini Skill and MoneyPrinterTurbo installations. Gemini requires Chrome/Edge with an existing Google login and normally takes 60–120 seconds per image. The generated images must decode successfully, and the final video must be a decodable vertical MP4 with a valid audio track. Validation metadata is returned under `artifacts.validation`.
 
 ## Run the AI Art Folder Pipeline
 
-Edit `task.ai-art.example.json` so `params.source_dir` points to a folder containing images, then run:
+Edit `examples/tasks/local/task.ai-art.example.json` so `params.source_dir` points to a folder containing images, then run:
 
 ```powershell
-python -m content_pipeline.orchestrator --task task.ai-art.example.json
+ai-popline run --task examples/tasks/local/task.ai-art.example.json
 ```
 
 Images are scanned from the top level in natural filename order, or restricted to the exact filenames in optional `source_files`. Photo-Process receives the shared `image_prompt`; successful originals move to `archive_dir` (default `source_dir/已处理`) and failures move to optional `failed_dir`. Successful edited images are regrouped four per video, with a final smaller group when needed. Each image displays for five seconds with a subtle zoom and fade, using a deterministic MP3 from `AI_ART_BGM_DIR`.
@@ -89,20 +89,20 @@ Set `publish: true` only after reviewing the generated videos. Each target in `p
 
 ## Run the Japanese Local Image Pipeline
 
-Edit `task.japanese.example.json` so `params.source_dir` points to a folder containing images, then run:
+Edit `examples/tasks/local/task.japanese.example.json` so `params.source_dir` points to a folder containing images, then run:
 
 ```powershell
-python -m content_pipeline.orchestrator --task task.japanese.example.json
+ai-popline run --task examples/tasks/local/task.japanese.example.json
 ```
 
 Images are scanned from the top level in natural filename order, or restricted to filenames in optional `source_files`. The current `日语视觉化` Gem is image-only: by default the pipeline opens `https://gemini.google.com/gem/f306c82a8105`, uploads each image, and submits without typing extra prompt text (`image_prompt` may be an empty string). Successful outputs are saved as stable numbered image files in `params.output_dir`, defaulting to `source_dir/日语改图`. Original source images are preserved. This pipeline stops after local image validation and ignores publishing.
 
 ## Run the Grouped Anime MPT Pipeline
 
-Use `task.grouped-anime.example.json` for the persistent grouped-anime workflow:
+Use `examples/tasks/local/task.grouped-anime.example.json` for the persistent grouped-anime workflow:
 
 ```powershell
-python -m content_pipeline.orchestrator --task task.grouped-anime.example.json
+ai-popline run --task examples/tasks/local/task.grouped-anime.example.json
 ```
 
 The workflow copies source images into the job workspace, groups them by filename prefix, deterministically selects music from MoneyPrinterTurbo's `resource/songs`, and trims or loops it to `image count × seconds_per_image`. Each prefix group invokes MoneyPrinterTurbo exactly once with local images, the prepared music as custom audio, 9:16 output, subtitles disabled, TTS skipped, additional BGM disabled, and MPT cross-posting disabled. The video is pure imagery: `params.title` is optional and no title, description, subtitle, or other text is rendered into the frame. The final MP4 and its MPT task directory are retained as job artifacts and validated before any publishing step.
