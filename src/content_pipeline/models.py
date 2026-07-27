@@ -217,6 +217,11 @@ class ArtifactSet(BaseModel):
 class JobSnapshot(BaseModel):
     task_id: str
     status: JobStatus
+    store_version: int = 1
+    created_at: str | None = None
+    updated_at: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
     current_step: PipelineStep | None = None
     task: TaskInput
     route: RouteResult | None = None

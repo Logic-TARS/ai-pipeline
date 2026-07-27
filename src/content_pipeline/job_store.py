@@ -31,10 +31,14 @@ class JobStore:
         job_dir = self.job_dir(task_id)
         (job_dir / "images").mkdir(parents=True)
         (job_dir / "video").mkdir()
+        now = utc_now()
         snapshot = JobSnapshot(
             task_id=task_id,
             status=JobStatus.QUEUED,
             task=task,
+            store_version=STORE_VERSION,
+            created_at=now,
+            updated_at=now,
         )
         self.save(snapshot)
         self.event(task_id, "job_created", {"task": task.model_dump(mode="json")})
@@ -56,9 +60,12 @@ class JobStore:
     def save(self, snapshot: JobSnapshot) -> None:
         path = self.status_path(snapshot.task_id)
         path.parent.mkdir(parents=True, exist_ok=True)
+        snapshot.store_version = STORE_VERSION
+        snapshot.updated_at = utc_now()
         data = snapshot.model_dump(mode="json")
-        data["store_version"] = STORE_VERSION
-        path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp_path = path.with_name(f"{path.name}.tmp")
+        tmp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp_path.replace(path)
 
     # ------------------------------------------------------------------
     # Events
@@ -80,6 +87,8 @@ class JobStore:
     def mark_running(self, task_id: str, step: PipelineStep) -> JobSnapshot:
         snapshot = self.get(task_id)
         snapshot.status = JobStatus.RUNNING
+        if snapshot.started_at is None:
+            snapshot.started_at = utc_now()
         snapshot.current_step = step
         snapshot.error = None
         self.save(snapshot)
@@ -104,6 +113,7 @@ class JobStore:
             PipelineStep.COMPLETE if status in {JobStatus.SUCCEEDED, JobStatus.PARTIAL} else snapshot.current_step
         )
         snapshot.error = error
+        snapshot.finished_at = utc_now()
         self.save(snapshot)
         self.event(task_id, "job_finished", {"status": status.value, "error": error})
 

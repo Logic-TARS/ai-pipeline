@@ -451,6 +451,12 @@ async def list_jobs(limit: int = 10) -> dict[str, Any]:
         return {"status": "failed", "error": str(exc)}
 
 
-if __name__ == "__main__":
+def main() -> int:
+    """Run the MCP server over stdio."""
     logging.basicConfig(stream=sys.stderr, level=logging.INFO)
     mcp.run(transport="stdio")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
