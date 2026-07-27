@@ -60,6 +60,7 @@ def run_japanese_pipeline(
                     prompt=params.image_prompt,
                     output_path=output_path,
                     settings=settings,
+                    target_gem_name="日语视觉化",
                 )
             record.error = None
         except Exception as exc:

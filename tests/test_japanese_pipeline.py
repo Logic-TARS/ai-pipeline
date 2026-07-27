@@ -17,8 +17,9 @@ def test_japanese_pipeline_saves_processed_images_locally(tmp_path: Path, monkey
     for name in ("1.png", "2.png"):
         Image.new("RGB", (90, 160), color="blue").save(source_dir / name)
 
-    def fake_photo_process(*, source: Path, output_path: Path, **_kwargs) -> Path:
+    def fake_photo_process(*, source: Path, output_path: Path, target_gem_name: str, **_kwargs) -> Path:
         assert source.parent.name == "photo_process_sources"
+        assert target_gem_name == "日语视觉化"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, output_path)
         return output_path
@@ -56,7 +57,8 @@ def test_japanese_pipeline_partial_when_one_image_fails(tmp_path: Path, monkeypa
     for name in ("1.png", "2.png", "3.png"):
         Image.new("RGB", (90, 160), color="blue").save(source_dir / name)
 
-    def fake_photo_process(*, source: Path, output_path: Path, **_kwargs) -> Path:
+    def fake_photo_process(*, source: Path, output_path: Path, target_gem_name: str, **_kwargs) -> Path:
+        assert target_gem_name == "日语视觉化"
         if source.name == "0002.png":
             raise RuntimeError("image rejected")
         output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -37,6 +37,7 @@ def test_call_photo_process_forces_utf8_subprocess_output(tmp_path: Path, monkey
     captured: dict[str, object] = {}
 
     def fake_run_command(command, **kwargs):
+        captured["command"] = command
         captured["env"] = kwargs["env"]
         return subprocess.CompletedProcess(
             command,
@@ -61,8 +62,45 @@ def test_call_photo_process_forces_utf8_subprocess_output(tmp_path: Path, monkey
     )
 
     assert captured["env"] == {"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+    assert "--target-gem-name" not in captured["command"]
     assert output == tmp_path / "out" / "0001.png"
     assert output.is_file()
+
+
+def test_call_photo_process_can_override_target_gem_name(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "source.png"
+    generated = tmp_path / "generated.png"
+    Image.new("RGB", (10, 10)).save(source)
+    Image.new("RGB", (10, 10)).save(generated)
+    captured: dict[str, object] = {}
+
+    def fake_run_command(command, **kwargs):
+        captured["command"] = command
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"success": True, "image_path": str(generated)}, ensure_ascii=False) + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("content_pipeline.tools.photo_process_client.run_command", fake_run_command)
+    settings = Settings(
+        photo_process_dir=tmp_path,
+        photo_process_python=tmp_path / "python.exe",
+    )
+    settings.photo_process_python.write_text("", encoding="utf-8")
+    (tmp_path / "main.py").write_text("", encoding="utf-8")
+
+    call_photo_process(
+        source=source,
+        prompt="日语风格",
+        output_path=tmp_path / "out" / "0001.png",
+        settings=settings,
+        target_gem_name="日语视觉化",
+    )
+
+    command = captured["command"]
+    assert command[command.index("--target-gem-name") + 1] == "日语视觉化"
 
 
 def test_choose_bgm_is_stable(tmp_path: Path) -> None:

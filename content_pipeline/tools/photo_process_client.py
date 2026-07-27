@@ -41,6 +41,7 @@ def call_photo_process(
     prompt: str,
     output_path: Path,
     settings: Settings,
+    target_gem_name: str | None = None,
 ) -> Path:
     for existing in sorted(output_path.parent.glob(f"{output_path.stem}.*")) if output_path.parent.exists() else []:
         if existing.suffix.lower() in SOURCE_IMAGE_SUFFIXES and existing.is_file():
@@ -52,17 +53,21 @@ def call_photo_process(
     if not main_py.is_file():
         raise ConfigError(f"Photo-Process entrypoint not found: {main_py}")
 
+    command = [
+        str(settings.photo_process_python),
+        str(main_py),
+        "comic",
+        "--image",
+        str(source.resolve()),
+        "--prompt",
+        prompt,
+    ]
+    if target_gem_name:
+        command.extend(["--target-gem-name", target_gem_name])
+    command.append("--json")
+
     result = run_command(
-        [
-            str(settings.photo_process_python),
-            str(main_py),
-            "comic",
-            "--image",
-            str(source.resolve()),
-            "--prompt",
-            prompt,
-            "--json",
-        ],
+        command,
         cwd=settings.photo_process_dir,
         timeout=900,
         retries=0,
