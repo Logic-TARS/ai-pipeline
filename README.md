@@ -1,147 +1,415 @@
 # AI Popline Content Pipeline
 
-AI content production pipeline orchestrating Gemini, Photo-Process, MoneyPrinterTurbo, and social-auto-upload across 6 content pipelines.
+AI Popline is a local-first content automation service for turning structured tasks, daily Markdown handoffs, and image folders into validated short-form media. It coordinates Gemini, Photo-Process, MoneyPrinterTurbo (MPT), FFmpeg, and social-auto-upload (SAU) across six pipelines, while keeping publishing disabled unless a task explicitly opts in.
 
-📖 **[Full Documentation](docs/)** — architecture, agent interface, testing, publishing
+> **Safety first:** generation and validation can run without publishing. A task must contain `"publish": true` before any uploader is called, and supported publishing paths fail closed when private visibility cannot be proved.
 
-## Quick Start
+📖 **[Full documentation](docs/README.md)** — [architecture](docs/architecture.md), [configuration](docs/configuration.md), [agent interfaces](docs/agent-interface.md), [testing](docs/smoke-testing.md), and [publishing](docs/publishing-runbook.md)
+
+## Contents
+
+- [Pipelines](#pipelines)
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [Configuration](#configuration)
+- [Task format](#task-format)
+- [Running pipelines](#running-pipelines)
+- [CLI reference](#cli-reference)
+- [REST API](#rest-api)
+- [MCP agent interface](#mcp-agent-interface)
+- [Jobs, status, and artifacts](#jobs-status-and-artifacts)
+- [Publishing safety](#publishing-safety)
+- [Development and testing](#development-and-testing)
+- [Docker](#docker)
+- [Troubleshooting](#troubleshooting)
+
+## Pipelines
+
+| Pipeline | `content_type` | Input and flow | Local output | Optional publishing |
+| --- | --- | --- | --- | --- |
+| Anime | `anime` | Task script/topic → Gemini images → MPT video | Images and validated vertical MP4 | Bilibili |
+| Finance | `finance` | Daily Finance Markdown → 350–500-character narration → narrated MPT video | MP4, subtitles, script, and validation evidence | Douyin, Kuaishou |
+| AI Briefing | `ai_briefing` | Daily handoff/Markdown/text → compressed narration → narrated MPT video | MP4, subtitles, handoff status, and validation evidence | Douyin, Kuaishou, Tencent draft |
+| AI Art | `ai_art` | Image folder → Photo-Process editing → grouped FFmpeg gallery videos | Processed images and one or more validated MP4 files | Douyin, Bilibili |
+| Grouped Anime | `grouped_anime` | Images grouped by filename prefix → one visual-only MPT video per group | Group videos, prepared music, and MPT artifacts | Douyin, Bilibili |
+| Japanese | `japanese` | Image folder → Photo-Process `日语视觉化` Gem | Validated processed images | None; publishing is ignored |
+
+Run `ai-popline capabilities` to read the pipeline metadata exposed by the installed version.
+
+## Requirements
+
+### Core
+
+- Python **3.11 or newer**
+- [`uv`](https://docs.astral.sh/uv/)
+- A writable local output directory
+- Windows PowerShell is used in the examples; the Python CLI also works from other shells
+
+### Pipeline-specific local tools
+
+Only configure the tools needed by the pipelines you run:
+
+| Tool | Used for |
+| --- | --- |
+| Gemini Skill or `GEMINI_IMAGE_COMMAND` | Anime image generation |
+| Photo-Process | AI Art and Japanese image editing through Gemini |
+| MoneyPrinterTurbo | Anime, Finance, AI Briefing, and Grouped Anime video generation |
+| FFmpeg | Gallery rendering, audio preparation, and media validation |
+| social-auto-upload | Optional publishing |
+
+Real browser-backed and publishing runs require valid authenticated local sessions in the corresponding tools. AI Popline is designed for a trusted local environment; do not expose its API or browser worker publicly without a separate security review.
+
+## Quick start
 
 ```powershell
-# Install dependencies
+# Install the package and runtime dependencies
 uv sync
 
-# Copy and edit environment config
+# Create local configuration
 copy .env.example .env
-# Edit .env with your local tool paths
+# Edit .env and replace the example paths with paths on this machine
 
-# Check your environment
+# Inspect configured tools and paths
 ai-popline doctor
 
-# List available pipelines
+# Discover available workflows
 ai-popline capabilities
 
-# Run a dry-run example
+# Validate and run a safe dry-run task
+ai-popline validate-task --task examples/tasks/dry-run/task.example.json
 ai-popline run --task examples/tasks/dry-run/task.example.json
 ```
 
-## Overview
+On Bash or Git Bash, use `cp .env.example .env` instead of `copy`.
 
-This project orchestrates three local tools into a deterministic content pipeline:
+`doctor` checks all known external tools, so it may return a non-zero exit code when an unused pipeline dependency is not installed. The Anime dry-run example does not publish.
 
-1. Route a task to a content profile.
-2. Generate ordered images.
-3. Build a video with MoneyPrinterTurbo.
-4. Upload with social-auto-upload, only when private Bilibili visibility is explicitly configured.
+## Configuration
 
-It also supports an `ai_art` branch that reads a local image folder, edits each image through Photo-Process, groups successful outputs into vertical gallery videos, adds background music, and optionally publishes privately to Douyin and/or Bilibili.
+AI Popline has two configuration layers:
 
-The `japanese` branch is image-only: it reads a local image folder, edits each image through Photo-Process, and saves processed images to a local output folder. It does not generate video or upload anywhere.
+1. `.env` or process environment variables for global paths and runtime settings.
+2. [`config/pipeline.defaults.yaml`](config/pipeline.defaults.yaml) for optional per-pipeline task defaults.
 
-Real tasks stop after producing and validating the local video unless `publish: true` is explicitly present in the task. This safe default prevents an accidental upload.
+Important environment variables include:
 
-## Run the Daily AI Briefing Pipeline
+| Variable | Purpose |
+| --- | --- |
+| `PIPELINE_DATA_DIR` | Job and artifact root; defaults to `output` |
+| `PIPELINE_DEFAULTS_FILE` | Per-pipeline defaults file |
+| `GEMINI_SKILL_DIR` | Gemini Skill installation |
+| `GEMINI_IMAGE_COMMAND` | Optional command template used instead of the default Gemini integration |
+| `PHOTO_PROCESS_DIR` | Photo-Process installation |
+| `PHOTO_PROCESS_PYTHON` | Python executable for Photo-Process |
+| `PHOTO_PROCESS_WORKER_URL` | Optional localhost persistent Photo-Process browser worker |
+| `MPT_DIR` / `MPT_PYTHON` | MoneyPrinterTurbo installation and Python executable |
+| `AI_ART_BGM_DIR` | Music directory used by image-based video pipelines |
+| `SAU_DIR` / `SAU_EXE` | social-auto-upload installation and executable |
+| `SAU_BILIBILI_PRIVATE_ARGS` | Verified Bilibili only-self arguments, normally `--is-only-self 1` |
+| `FINANCE_MD_DIR` | Default Finance Markdown archive |
+| `AI_BRIEFING_DIR` | Default daily AI briefing handoff root |
+| `ROUTER_LLM_BASE_URL`, `ROUTER_LLM_API_KEY`, `ROUTER_LLM_MODEL` | Optional router LLM; deterministic keyword routing is used when absent |
 
-The first-class `ai_briefing` pipeline reads today's handoff, Markdown, and text from `G:\Hermes-Output\每日AI简报\YYYYMMDD`. It deterministically compresses the briefing to 350–500 Chinese characters, derives a complete in-video subject capped at 16 characters, calls MoneyPrinterTurbo with Pexels material, a 9:16 aspect ratio, `zh-CN-YunxiNeural`, and subtitles, then validates the video, audio, and spoken subtitles. It never falls back to an older date.
+The defaults file is intentionally disabled:
 
-```powershell
-ai-popline run --task examples/tasks/local/task.ai-briefing.example.json
+```yaml
+enabled: false
 ```
 
-Real output remains compatible with the handoff directory as `video\briefing.mp4`, `video\briefing.srt`, `video_status.json`, and `handoff_index.jsonl`. MPT tasks use the deterministic id `ai-briefing-YYYYMMDD` and are reused only when the narration and source hashes match.
+After reviewing its paths, set `enabled: true` to merge `pipelines.<content_type>.params` into tasks. Explicit values in task JSON always win. Publishing cannot be enabled through these parameter defaults; the task itself must set `publish` to `true`.
 
-The scheduled publish task is installed with `scripts\register_daily_ai_briefing_task.ps1`. It runs daily at 09:30 in the logged-in user's session and privately publishes to Douyin account `金融破壁人` and Kuaishou account `破壁人`. Platform titles use a complete lead phrase capped at 20 characters instead of mechanically truncating the full article title. Publishing remains fail-closed and file-hash deduplication cannot be bypassed by the compatibility runner.
+See [Configuration](docs/configuration.md) for merge rules and supported path placeholders.
 
-## Run the Daily Finance Pipeline
+## Task format
 
-Finance tasks use the newest Markdown for today, or yesterday when today's file is absent, from `G:\Job\Automation-Output\sajin\fund-daily`. The pipeline reads only the `## Response` section, accepts structured headings or the compact module-summary table emitted by the local archive, and builds a 350–500 character narration for a roughly 90-second video. A path-only handoff or an undersized script fails during source scanning before MoneyPrinterTurbo or either uploader can run. Valid input calls MoneyPrinterTurbo directly with Pexels material, a 9:16 aspect ratio, Chinese voiceover, and subtitles. Finance tasks do not call Gemini.
+A minimal safe task looks like this:
 
-```powershell
-ai-popline run --task examples/tasks/local/task.finance.example.json
+```json
+{
+  "description": "Create a four-scene Friday anime short",
+  "content_type": "anime",
+  "topic": "Friday after work",
+  "publish": false,
+  "params": {
+    "script": "Scene 1... Scene 2... Scene 3... Scene 4...",
+    "dry_run": true
+  }
+}
 ```
 
-With `publish: false`, the validated video remains local. With explicit `publish: true`, the default targets are Douyin account `金融破壁人` and Kuaishou account `破壁人`. Both uploaders must prove `仅自己可见` and successful publication; otherwise that target fails while the other target continues. Finance tasks do not publish to Bilibili.
+| Field | Required | Description |
+| --- | --- | --- |
+| `description` | Yes | Human-readable task description |
+| `content_type` | Recommended | `anime`, `finance`, `ai_briefing`, `ai_art`, `grouped_anime`, or `japanese`; if omitted, the router attempts to resolve it |
+| `topic` | No | Routing or content topic |
+| `publish` | No | Defaults to `false`; must be explicitly `true` to call uploaders |
+| `publish_targets` | No | List of platform/account targets; Bilibili targets also require `tid` |
+| `params` | No | Pipeline-specific settings such as source folders, scripts, dates, titles, and dry-run flags |
 
-## Run a Dry Run
+A publish target has this shape:
+
+```json
+{
+  "platform": "bilibili",
+  "account": "account-name",
+  "tid": 27
+}
+```
+
+Canonical examples are organized by risk level:
+
+- [`examples/tasks/dry-run/`](examples/tasks/dry-run/) — safe command smoke tests
+- [`examples/tasks/local/`](examples/tasks/local/) — local generation/editing with `publish: false`
+- [`examples/tasks/publish/`](examples/tasks/publish/) — real private/draft publishing examples; review before use
+- [`examples/tasks/archive/`](examples/tasks/archive/) — date-specific regression/reference tasks
+
+See [`examples/tasks/README.md`](examples/tasks/README.md) for the example layout.
+
+## Running pipelines
+
+### Safe Anime dry run
 
 ```powershell
 ai-popline run --task examples/tasks/dry-run/task.example.json
 ```
 
-## Run Real Generation Without Uploading
+For real Gemini and MPT generation without upload, configure both tools and run:
 
 ```powershell
 ai-popline run --task examples/tasks/local/task.real.example.json
 ```
 
-The real run uses the configured Gemini Skill and MoneyPrinterTurbo installations. Gemini requires Chrome/Edge with an existing Google login and normally takes 60–120 seconds per image. The generated images must decode successfully, and the final video must be a decodable vertical MP4 with a valid audio track. Validation metadata is returned under `artifacts.validation`.
+Generated images must decode successfully. The final video must be a decodable vertical MP4 with valid audio; validation metadata is persisted under `artifacts.validation`.
 
-## Run the AI Art Folder Pipeline
+### Daily AI Briefing
 
-Edit `examples/tasks/local/task.ai-art.example.json` so `params.source_dir` points to a folder containing images, then run:
+```powershell
+ai-popline run --task examples/tasks/local/task.ai-briefing.example.json
+```
+
+The default source is `AI_BRIEFING_DIR\YYYYMMDD`. The pipeline uses only the requested/current date and never silently falls back to an older briefing. It builds a 350–500 Chinese-character narration, produces a 9:16 MPT video with Chinese voiceover and subtitles, and validates video, audio, and spoken-subtitle evidence.
+
+The checked-in local example has `dry_run: true`; remove that flag or set it to `false` for real generation. Compatible handoff outputs include `video\briefing.mp4`, `video\briefing.srt`, `video_status.json`, and `handoff_index.jsonl`.
+
+To register the daily 09:30 Windows task used by this project:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\register_daily_ai_briefing_task.ps1
+```
+
+Review the script and publish task before registering it: the scheduled workflow can privately publish to its configured accounts.
+
+### Daily Finance
+
+```powershell
+ai-popline run --task examples/tasks/local/task.finance.example.json
+```
+
+Finance scans `FINANCE_MD_DIR` unless `params.source_dir` overrides it. It chooses today's Markdown, or yesterday's when today's file is absent, reads the `## Response` content, builds a 350–500 Chinese-character narration, and invokes MPT directly with Pexels material, Chinese voiceover, subtitles, and a 9:16 aspect ratio. Finance does not call Gemini or publish to Bilibili.
+
+The checked-in local example has `dry_run: true`. A missing, path-only, malformed, or undersized source fails during source scanning before MPT or an uploader can run.
+
+### AI Art folder processing
+
+Edit `params.source_dir` and the archive/output settings in the example, then run:
 
 ```powershell
 ai-popline run --task examples/tasks/local/task.ai-art.example.json
 ```
 
-Images are scanned from the top level in natural filename order, or restricted to the exact filenames in optional `source_files`. Photo-Process receives the shared `image_prompt`; successful originals move to `archive_dir` (default `source_dir/已处理`) and failures move to optional `failed_dir`. Successful edited images are regrouped four per video, with a final smaller group when needed. Each image displays for five seconds with a subtle zoom and fade, using a deterministic MP3 from `AI_ART_BGM_DIR`.
+Top-level images are processed in natural filename order, or restricted by `source_files`. Photo-Process applies the shared `image_prompt`; validated results are grouped into gallery videos, with deterministic background music from `AI_ART_BGM_DIR`. Successful originals move to `archive_dir` and failures can move to `failed_dir`.
 
-Set `publish: true` only after reviewing the generated videos. Each target in `publish_targets` is attempted independently; a failed target does not stop the others and produces a `partial` job result. Douyin must prove “仅自己可见” before success. Bilibili remains blocked unless verified private arguments are configured.
-
-## Run the Japanese Local Image Pipeline
-
-Edit `examples/tasks/local/task.japanese.example.json` so `params.source_dir` points to a folder containing images, then run:
+### Japanese local image processing
 
 ```powershell
 ai-popline run --task examples/tasks/local/task.japanese.example.json
 ```
 
-Images are scanned from the top level in natural filename order, or restricted to filenames in optional `source_files`. The current `日语视觉化` Gem is image-only: by default the pipeline opens `https://gemini.google.com/gem/f306c82a8105`, uploads each image, and submits without typing extra prompt text (`image_prompt` may be an empty string). Successful outputs are saved as stable numbered image files in `params.output_dir`, defaulting to `source_dir/日语改图`. Original source images are preserved. This pipeline stops after local image validation and ignores publishing.
+The pipeline sends top-level source images to the configured Photo-Process Gem and stores stable numbered outputs in `params.output_dir` (default: `source_dir/日语改图`). Source images are preserved. This workflow ends after image validation and never generates video or publishes.
 
-## Run the Grouped Anime MPT Pipeline
-
-Use `examples/tasks/local/task.grouped-anime.example.json` for the persistent grouped-anime workflow:
+### Grouped Anime videos
 
 ```powershell
 ai-popline run --task examples/tasks/local/task.grouped-anime.example.json
 ```
 
-The workflow copies source images into the job workspace, groups them by filename prefix, deterministically selects music from MoneyPrinterTurbo's `resource/songs`, and trims or loops it to `image count × seconds_per_image`. Each prefix group invokes MoneyPrinterTurbo exactly once with local images, the prepared music as custom audio, 9:16 output, subtitles disabled, TTS skipped, additional BGM disabled, and MPT cross-posting disabled. The video is pure imagery: `params.title` is optional and no title, description, subtitle, or other text is rendered into the frame. The final MP4 and its MPT task directory are retained as job artifacts and validated before any publishing step.
+Source images are grouped by filename prefix. Each group gets one visual-only MPT invocation, with deterministic music trimmed or looped to `image count × seconds_per_image`. No title, description, subtitles, or other text is rendered into the frame. Group videos and MPT task directories remain available for review before publishing.
 
-The example keeps `publish: false`. After reviewing the output, explicitly change it to `true` to publish independently to the configured Douyin and Bilibili accounts. Publishing remains private and fail-closed: Douyin must report “仅自己可见”, and Bilibili requires `SAU_BILIBILI_PRIVATE_ARGS=--is-only-self 1`. A failed target does not discard successful videos or other successful targets.
+## CLI reference
 
-## Start the API
+The package installs the `ai-popline` command:
+
+| Command | Purpose |
+| --- | --- |
+| `ai-popline doctor` | Check Python, configuration, external tools, output directory, and profiles |
+| `ai-popline doctor --bundle diagnostics.zip` | Write a diagnostic bundle |
+| `ai-popline capabilities` | List registered pipelines and their contracts |
+| `ai-popline validate-task --task <file.json>` | Parse and normalize a task without running it |
+| `ai-popline run --task <file.json>` | Run a task synchronously and print the final job snapshot |
+| `ai-popline serve --host 127.0.0.1 --port 8080` | Start the local REST API |
+| `ai-popline mcp` | Start the MCP stdio server |
+| `ai-popline jobs list [--status STATUS] [--content-type TYPE] [--limit N]` | List recent jobs |
+| `ai-popline jobs show <task_id>` | Print a persisted job snapshot |
+| `ai-popline jobs events <task_id> [--limit N]` | Print recent audit events |
+| `ai-popline jobs cleanup --older-than-days N` | Delete old persisted jobs |
+
+`run` exits with code `0` for `succeeded` or `partial`; other terminal states return a non-zero code.
+
+## REST API
+
+Start the trusted-local API:
+
+```powershell
+ai-popline serve --host 127.0.0.1 --port 8080
+```
+
+Equivalent direct command:
 
 ```powershell
 uvicorn app:app --host 127.0.0.1 --port 8080
 ```
 
-Then call:
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `GET` | `/health` | Process health |
+| `GET` | `/ready` | Data/profile path readiness information |
+| `GET` | `/capabilities` | Registered pipeline metadata |
+| `POST` | `/run` | Queue a `TaskInput`; returns `task_id` and `queued` |
+| `GET` | `/status/{task_id}` | Read the current job snapshot |
+| `GET` | `/jobs` | List jobs; supports `status`, `content_type`, and `limit` query parameters |
+| `GET` | `/jobs/{task_id}/events` | Read recent append-only events; supports `limit` |
 
-```text
-POST /run
-GET /status/{task_id}
-```
+The service uses a local thread pool for background jobs. Keep it bound to `127.0.0.1` unless the deployment has been separately secured.
 
-## Agent MCP Interface
+## MCP agent interface
 
-The MCP server is the preferred interface for Codex/Hermes-style agents:
+Start the preferred interface for Codex/Hermes-style agents:
 
 ```powershell
-python -m content_pipeline.mcp_server
+ai-popline mcp
 ```
 
-Use `list_capabilities` first to discover supported workflows and lower-tool contracts. For long browser, video, or publishing work, use `run_task_async` or a task-specific async tool, then poll `get_status` and inspect `get_job_events`.
+Agents should call `list_capabilities`, submit long work with `run_task_async` or a pipeline-specific async tool, poll `get_status`, and inspect `get_job_events` before reporting completion. Pipeline-specific tools include:
 
-Task-specific MCP tools include:
+- `process_ai_art_async`
+- `process_japanese_images`
+- `run_finance_video_async`
 
-- `process_ai_art_async`: Photo-Process folder editing, gallery video creation, optional private publishing.
-- `process_japanese_images`: Photo-Process-backed local image editing; no video or upload.
-- `run_finance_video_async`: dedicated Finance Markdown-to-video workflow; Finance never enters the Gemini image flow.
+See [Agent Interface](docs/agent-interface.md) for all MCP tools, data contracts, adapter evidence, and error handling.
 
-Lower tools should be connected through stable adapters. `Photo-Process` is exposed as a CLI JSON adapter through `main.py comic --image <path> --prompt <text> --json`; it owns Gemini browser automation, current-response candidate selection, and image validation. The parent pipeline should pass staged copies when originals must be preserved and should commit only validated artifacts.
+## Jobs, status, and artifacts
 
-## Private Upload Guard
+By default, jobs are persisted under:
 
-Real Bilibili upload is blocked unless `SAU_BILIBILI_PRIVATE_ARGS` is set after verifying the actual `biliup upload --help` supports a private/visibility argument. Dry runs never call SAU.
+```text
+output/jobs/<task_id>/
+├── status.json       # Current JobSnapshot
+├── events.jsonl      # Append-only audit events
+├── images/           # Generated or staged images, when applicable
+├── video/            # Generated videos, when applicable
+└── ...               # Pipeline-specific processed/group/artifact directories
+```
 
-Uploading also requires the task itself to contain `"publish": true`. Without that explicit opt-in, `upload_result` reports `publish_not_requested`.
+A job moves through a subset of `route`, `source_scan`, `image`, `video`, `archive`, `upload`, and `complete`.
+
+| Status | Meaning |
+| --- | --- |
+| `queued` | Persisted but not started |
+| `running` | A pipeline step is executing |
+| `succeeded` | All required work completed |
+| `failed` | Required work failed |
+| `blocked` | A safety or capability guard prevented completion |
+| `partial` | Local artifacts or some independent publish targets succeeded while another target failed |
+
+Treat `status.json`, `events.jsonl`, `artifacts.validation`, and `artifacts.publish_results` as completion evidence. A lower tool returning success is not sufficient unless AI Popline also validates the resulting artifacts.
+
+## Publishing safety
+
+Publishing is always opt-in:
+
+```json
+{
+  "publish": true,
+  "publish_targets": [
+    {"platform": "douyin", "account": "account-name"}
+  ]
+}
+```
+
+Before setting `publish: true`, run the same task locally with publishing disabled and review every generated artifact.
+
+| Platform | Guard |
+| --- | --- |
+| Douyin | The uploader must prove `仅自己可见` |
+| Kuaishou | The uploader must prove private visibility |
+| Bilibili | Requires a `tid` and verified `SAU_BILIBILI_PRIVATE_ARGS=--is-only-self 1` |
+| Tencent | Saved as a draft for manual review; not auto-published |
+
+Publishing targets are attempted independently where supported. One failed target can produce a `partial` job without discarding valid local artifacts or successful targets. Missing or ambiguous privacy evidence results in `blocked`, `failed`, or `partial` rather than silent success. File-hash deduplication also prevents accidental repeat uploads.
+
+Read the **[Publishing Runbook](docs/publishing-runbook.md)** before using anything under [`examples/tasks/publish/`](examples/tasks/publish/).
+
+## Development and testing
+
+Install test tooling:
+
+```powershell
+uv sync --extra test
+```
+
+Run the repository quality gate:
+
+```powershell
+.\scripts\check.ps1
+```
+
+On Bash or Git Bash:
+
+```bash
+bash scripts/check.sh
+```
+
+The quality gate checks formatting, Ruff lint, and tests that do not call external tools or publish. Individual commands are:
+
+```powershell
+uv run ruff format --check src/ tests/
+uv run ruff check src/ tests/
+uv run pytest -m "not publish and not external" --tb=short
+```
+
+External and publishing tests are intentionally separate:
+
+```powershell
+# Requires configured real tools
+$env:RUN_EXTERNAL_TESTS = "1"
+uv run pytest -m external
+
+# DANGER: tests selected here may really publish
+$env:RUN_PUBLISH_TESTS = "1"
+uv run pytest -m publish
+```
+
+See [Smoke Testing](docs/smoke-testing.md) and [`tests/README.md`](tests/README.md) before running real integrations.
+
+## Docker
+
+The REST service can be built with the included Docker files:
+
+```powershell
+docker compose up --build
+```
+
+Create `.env` first. The API is exposed on `${API_PORT:-8080}` and job output is mounted at `./output:/data`.
+
+The production pipelines still need their external tools, executables, media resources, browser sessions, and credentials to be accessible inside the container. Windows `.exe` paths from the example `.env` are not executable in a Linux container; use Linux-compatible installations and container paths, or run AI Popline directly on the configured Windows workstation.
+
+## Troubleshooting
+
+1. Run `ai-popline doctor` and resolve relevant path or executable failures.
+2. Validate the task with `ai-popline validate-task --task <file>`.
+3. Inspect `ai-popline jobs show <task_id>` and `ai-popline jobs events <task_id>`.
+4. Check `artifacts.validation`, `artifacts.publish_results`, and referenced lower-tool logs/manifests.
+5. For browser-backed failures, follow [Browser Automation Strategy](docs/browser-automation-strategy.md).
+6. For `PRIVATE_VISIBILITY_UNSUPPORTED`, `PUBLISH_FAILED`, or `ALREADY_PUBLISHED`, follow the [Publishing Runbook](docs/publishing-runbook.md).
+
+Common safety behavior is intentional: missing source material, invalid media, unavailable authenticated sessions, unsupported private visibility, and unparseable lower-tool output all fail closed rather than being treated as success.
