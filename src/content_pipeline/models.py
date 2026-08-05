@@ -6,7 +6,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-ContentType = Literal["anime", "finance", "ai_briefing", "ai_art", "grouped_anime", "japanese", "unknown"]
+ContentType = Literal[
+    "anime", "finance", "ai_briefing", "ai_art", "grouped_anime", "japanese", "script_video", "unknown"
+]
 
 
 class PipelineStep(StrEnum):
@@ -137,6 +139,17 @@ class AiBriefingParams(BaseModel):
     title: str | None = None
     description: str = "今日AI简报"
     tags: list[str] = Field(default_factory=lambda: ["AI", "人工智能", "科技"])
+    dry_run: bool = False
+    force_regenerate: bool = False
+
+
+class ScriptVideoParams(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    script: str = Field(min_length=350, max_length=500)
+    description: str = ""
+    tags: list[str] = Field(default_factory=list)
+    douyin_account: str = "金融破壁人"
+    kuaishou_account: str = "破壁人"
     dry_run: bool = False
     force_regenerate: bool = False
 

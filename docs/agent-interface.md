@@ -5,9 +5,7 @@ Codex, Hermes, or another local automation layer. It describes the current task
 submission surfaces, the persisted job contract, and the lower-tool adapter
 boundary used by Photo-Process, MoneyPrinterTurbo, and social-auto-upload.
 
-AI Popline is a local automation service. Do not treat these interfaces as a
-public internet API or expose them beyond the local trusted environment without
-a separate security review.
+AI Popline is a single-operator automation service. MCP and lower-tool interfaces remain local-only; the Web UI and REST API may additionally use the guarded ZeroTier boundary documented in [ZeroTier Web Access](zerotier-web-access.md). Public-internet and ordinary physical-LAN exposure are unsupported.
 
 ## Contract Layers
 
@@ -77,21 +75,32 @@ Callers should present that as a missing-task error and should not retry blindly
 
 ### REST
 
-Start the local FastAPI app:
+Start the guarded FastAPI listener:
 
 ```powershell
-uvicorn app:app --host 127.0.0.1 --port 8080
+ai-popline serve
 ```
+
+Loopback development may invoke Uvicorn directly with `--no-proxy-headers`; ZeroTier deployments must use the guarded CLI and the configured exact interface IP.
 
 Implemented endpoints:
 
 | Method | Path | Request | Response |
 | --- | --- | --- | --- |
-| `POST` | `/run` | `TaskInput` JSON body | `{ "task_id": "...", "status": "queued" }` |
-| `GET` | `/status/{task_id}` | path parameter | `JobSnapshot` JSON, or HTTP 404 with `task not found` |
+| `GET` | `/health` | none | Minimal unauthenticated liveness result |
+| `GET` | `/ready` | authenticated | Redacted readiness flags |
+| `POST` | `/auth/login` | admin token | Session cookies and CSRF token |
+| `POST` | `/auth/logout` | session and CSRF token | Clears session cookies |
+| `GET` | `/auth/me` | authenticated | Authentication method |
+| `GET` | `/ui/bootstrap` | authenticated | Non-sensitive Web form, status, and pipeline contract |
+| `POST` | `/validate-task` | authenticated `TaskInput` | Normalized task, warnings, and task-bound fingerprint without creating a job |
+| `POST` | `/run` | `TaskInput` JSON body | `{ "task_id": "...", "status": "queued" }`; publishing has additional guards |
+| `GET` | `/status/{task_id}` | authenticated path parameter | `JobSnapshot` JSON, or HTTP 404 with `task not found` |
+| `GET` | `/jobs` | authenticated filters | Recent job snapshots |
+| `GET` | `/jobs/{task_id}/events` | authenticated | Recent audit events |
+| `GET` | `/jobs/{task_id}/artifacts` | authenticated | Files registered by the job and contained in its directory |
 
-The REST service queues work on a local `ThreadPoolExecutor`. It is intended for
-trusted local callers on `127.0.0.1`.
+The packaged operator console is served at `/` and uses the same endpoints, session, CSRF, publish confirmation, and guarded artifact contract. The REST service queues work on a local `ThreadPoolExecutor`; with `WEB_AUTH_REQUIRED=true`, automation supplies `Authorization: Bearer <WEB_API_TOKEN>`, while ZeroTier peers are accepted only from explicit CIDRs and physical-LAN/public exposure remain unsupported.
 
 ### CLI
 

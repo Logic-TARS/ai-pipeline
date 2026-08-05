@@ -22,13 +22,45 @@ SAU_EXE=G:\Job\social-auto-upload\.venv\Scripts\sau.exe
 SAU_BILIBILI_PRIVATE_ARGS=--is-only-self 1
 FINANCE_MD_DIR=G:\Job\Automation-Output\sajin\fund-daily
 AI_BRIEFING_DIR=G:\Hermes-Output\每日AI简报
+TTSKILL_COMMAND=ttskill
+TTSKILL_TIMEOUT_SECONDS=120
 ```
+
+`TTSKILL_COMMAND` and `TTSKILL_TIMEOUT_SECONDS` configure the content studio's read-only financial research adapter. The browser cannot override its fixed Skill allowlist or action parameters; authenticate the local CLI separately with `ttskill login`.
 
 Validate global settings with:
 
 ```powershell
 ai-popline doctor
 ```
+
+## Web and ZeroTier settings
+
+The packaged operator console is served at `/` by `ai-popline serve`. The safe default is loopback-only, without Web/API publishing:
+
+```env
+WEB_BIND_HOST=127.0.0.1
+WEB_PORT=8080
+WEB_ALLOWED_NETWORKS=
+WEB_ALLOWED_HOSTS=127.0.0.1,localhost,::1
+WEB_ALLOWED_ORIGINS=http://127.0.0.1:8080,http://localhost:8080
+WEB_AUTH_REQUIRED=false
+WEB_PUBLISH_ENABLED=false
+WEB_ALLOW_ZEROTIER_HTTP=false
+```
+
+Remote access requires the exact ZeroTier interface IP and all of the following:
+
+- `WEB_ALLOWED_NETWORKS`: comma-separated ZeroTier CIDRs whose direct peers may connect.
+- `WEB_ALLOWED_HOSTS`: comma-separated HTTP Host names/IPs; include the exact bind IP.
+- `WEB_ALLOWED_ORIGINS`: comma-separated browser origins including scheme and port.
+- `WEB_AUTH_REQUIRED=true`.
+- independent `WEB_ADMIN_TOKEN`, `WEB_API_TOKEN`, and `WEB_SESSION_SECRET` values of at least 32 characters.
+- both `WEB_TLS_CERTFILE` and `WEB_TLS_KEYFILE`, unless the explicit restricted-mode `WEB_ALLOW_ZEROTIER_HTTP=true` exception is accepted.
+
+`WEB_SESSION_TTL_SECONDS` controls session lifetime, and `WEB_PUBLISH_REAUTH_SECONDS` controls how recently a session must have logged in before a publish request. `WEB_PUBLISH_ENABLED` defaults to false and is an additional API-level guard; it does not override pipeline privacy checks.
+
+`ai-popline serve` rejects wildcard listeners, remote addresses outside the configured CIDRs, missing authentication, partial TLS configuration, and bind addresses that are not assigned to a local interface. See the [ZeroTier Web Access Runbook](zerotier-web-access.md) before enabling remote access.
 
 ## Per-pipeline defaults
 

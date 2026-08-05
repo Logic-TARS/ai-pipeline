@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -50,17 +50,52 @@ class Settings(BaseSettings):
     sau_exe: Path = Path(r"G:\Job\social-auto-upload\.venv\Scripts\sau.exe")
     sau_bilibili_private_args: str = ""
 
-    # Finance / AI Briefing
+    # Finance / AI Briefing / content research
     finance_md_dir: Path = Path(r"G:\Job\Automation-Output\sajin\fund-daily")
     ai_briefing_dir: Path = Path(r"G:\Hermes-Output\每日AI简报")
+    ttskill_command: str = "ttskill"
+    ttskill_timeout_seconds: int = Field(default=120, ge=10, le=600)
 
     # Router LLM (optional — keyword fallback when absent)
     router_llm_base_url: str = ""
     router_llm_api_key: str = ""
     router_llm_model: str = ""
 
+    # Web / ZeroTier access. Remote access stays disabled with these defaults.
+    web_bind_host: str = "127.0.0.1"
+    web_port: int = Field(default=8080, ge=1, le=65535)
+    web_allowed_networks: str = ""
+    web_allowed_hosts: str = "127.0.0.1,localhost,::1"
+    web_allowed_origins: str = "http://127.0.0.1:8080,http://localhost:8080"
+    web_auth_required: bool = False
+    web_admin_token: SecretStr = SecretStr("")
+    web_api_token: SecretStr = SecretStr("")
+    web_session_secret: SecretStr = SecretStr("")
+    web_session_ttl_seconds: int = Field(default=28800, ge=300, le=86400)
+    web_publish_enabled: bool = False
+    web_publish_reauth_seconds: int = Field(default=300, ge=60, le=3600)
+    web_tls_certfile: Path | None = None
+    web_tls_keyfile: Path | None = None
+    web_allow_zerotier_http: bool = False
+
     # Environment tag
     env: str = "development"
+
+    @staticmethod
+    def _split_csv(value: str) -> tuple[str, ...]:
+        return tuple(item.strip() for item in value.split(",") if item.strip())
+
+    @property
+    def allowed_networks(self) -> tuple[str, ...]:
+        return self._split_csv(self.web_allowed_networks)
+
+    @property
+    def allowed_hosts(self) -> tuple[str, ...]:
+        return self._split_csv(self.web_allowed_hosts)
+
+    @property
+    def allowed_origins(self) -> tuple[str, ...]:
+        return self._split_csv(self.web_allowed_origins)
 
     def validate_tool_paths(self) -> list[str]:
         """Return a list of diagnostic warnings. Empty list = all clear."""

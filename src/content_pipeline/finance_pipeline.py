@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from .errors import ConfigError
+from .finance_script import FinanceScriptError, build_daily_markdown_script
 from .media_validation import validate_video
 from .models import FinanceParams, JobStatus, PipelineStep, PublishTarget
 from .pipelines.registry import PipelineContext, PipelineMeta, register
@@ -154,146 +155,10 @@ def _validate_finance_script(script: str) -> None:
 
 
 def build_90_second_script(response: str, publication_date: str) -> str:
-    summary_values = _summary_table(response)
-    summary_match = re.search(r"(?m)一句话总结[：:]\s*\*{0,2}\s*(.+)$", response)
-    summary = (
-        _first_sentence(summary_match.group(1))
-        if summary_match
-        else _summary_value(summary_values, "盘面定性", "顶部摘要", "一句话总结")
-    )
-    if not summary:
-        summary = _trim_complete(_first_sentence(_section(response, "顶部摘要")), 60)
-
-    index_section = _section(response, "四大指数", "四指数行情", "四指数表格")
-    index_rows = _table_rows(index_section)[:4]
-    indices = []
-    for row in index_rows:
-        if len(row) >= 3:
-            indices.append(f"{row[0]}报{row[1]}点，{row[2]}")
-    index_summary = _summary_value(summary_values, "四大指数", "四指数")
-
-    sector_section = _section(response, "板块轮动")
-    leaders: list[str] = []
-    laggards: list[str] = []
-    mode = ""
-    for line in sector_section.splitlines():
-        cleaned_line = _clean_markdown(line)
-        if "领涨" in cleaned_line:
-            mode = "up"
-            continue
-        if "领跌" in cleaned_line:
-            mode = "down"
-            continue
-        if line.lstrip().startswith(("•", "-")):
-            phrase = _trim_complete(_clean_markdown(line), 40)
-            if mode == "up" and not leaders:
-                leaders.append(phrase)
-            elif mode == "down" and not laggards:
-                laggards.append(phrase)
-            continue
-        if line.strip().startswith("|") and not re.search(r"\|\s*:?-{2,}", line):
-            cells = [_clean_markdown(cell) for cell in line.strip().strip("|").split("|")]
-            if len(cells) >= 2 and cells[0] not in {"板块", "品种"}:
-                phrase = f"{cells[0]}{cells[1]}"
-                if mode == "up" and not leaders:
-                    leaders.append(phrase)
-                elif mode == "down" and not laggards:
-                    laggards.append(phrase)
-    sector_summary = _summary_value(summary_values, "板块轮动")
-    sector_detail = _trim_complete(_clean_markdown(sector_section), 45) if sector_section else ""
-
-    keyword_section = _section(response, "今日关键词", "三个信号", "核心信号")
-    keywords = []
-    for line in keyword_section.splitlines():
-        named_match = re.match(r"\s*\*{0,2}(?:\d+[.、]|[①-⑩])\s*[「“](.+?)[」”]", line)
-        numbered_match = re.match(r"\s*\d+[.、]\s*(.+)", line)
-        if named_match:
-            keywords.append(_clean_markdown(named_match.group(1)))
-        elif numbered_match:
-            keywords.append(_first_sentence(numbered_match.group(1)))
-        if len(keywords) == 3:
-            break
-    keyword_summary = _summary_value(summary_values, "今日关键词", "三个信号", "核心信号")
-    keyword_detail = _trim_complete(_clean_markdown(keyword_section), 45) if keyword_section else ""
-
-    interpretation = _section(response, "我的解读", "策略建议", "投资建议")
-    advice_match = re.search(r"(?m)^.*我的建议.*$", interpretation)
-    strategy_match = re.search(r"(?im)^\s*\*\*策略上[：:]?\*\*\s*$", interpretation)
-    if strategy_match:
-        strategy = re.split(r"(?m)^\s*(?:\*真正|[-═─]{3,}|📁)", interpretation[strategy_match.end() :], maxsplit=1)[0]
-        strategy_items = [
-            _clean_markdown(line)
-            for line in strategy.splitlines()
-            if line.lstrip().startswith(("•", "-")) and _clean_markdown(line)
-        ]
-        advice = "；".join(strategy_items[:2]) if strategy_items else _trim_complete(_clean_markdown(strategy), 50)
-    else:
-        advice = _trim_complete(
-            _first_sentence(advice_match.group(0)) if advice_match else _first_sentence(interpretation),
-            55,
-        )
-    advice_summary = _summary_value(summary_values, "我的解读", "策略建议", "投资建议")
-    valuation_section = _section(response, "估值水位")
-    valuation_rows = _table_rows(valuation_section)[:4]
-    valuation_detail = "；".join(
-        f"{row[0]}PE{row[1]}，历史百分位{row[2]}，{row[-1]}" for row in valuation_rows if len(row) >= 4
-    )
-    valuation_summary = _summary_value(summary_values, "估值水位", "估值") or valuation_detail
-    cross_asset_summary = _summary_value(summary_values, "黄金债市", "黄金", "债券") or _trim_complete(
-        _clean_markdown(_section(response, "黄金债市", "黄金", "债券")), 100
-    )
-
-    date_text = publication_date.replace("-", "年", 1).replace("-", "月", 1) + "日"
-    parts = [f"{date_text}A股收盘观察。"]
-    if summary:
-        parts.append(summary + "。")
-    if indices:
-        parts.append("四大指数方面，" + "；".join(indices) + "。")
-    elif index_summary:
-        parts.append("四大指数方面，" + index_summary + "。")
-    if leaders or laggards:
-        sector_bits = []
-        if leaders:
-            sector_bits.append("领涨方向是" + leaders[0])
-        if laggards:
-            sector_bits.append("领跌方向是" + laggards[0])
-        parts.append("板块方面，" + "；".join(sector_bits) + "。")
-    elif sector_summary:
-        parts.append("板块方面，" + sector_summary + "。")
-    elif sector_detail:
-        parts.append("板块方面，" + sector_detail + "。")
-    if advice:
-        parts.append(advice + "。")
-    elif advice_summary:
-        parts.append("策略上，" + advice_summary + "。")
-    if keywords:
-        parts.append("今天需要关注的信号是：" + "；".join(keywords) + "。")
-    elif keyword_summary:
-        parts.append("今天需要关注的信号是：" + keyword_summary + "。")
-    elif keyword_detail:
-        parts.append("今天需要关注的信号是：" + keyword_detail + "。")
-    if valuation_summary:
-        parts.append("估值方面，" + valuation_summary + "。")
-    if cross_asset_summary:
-        parts.append("其他资产方面，" + cross_asset_summary + "。")
-
-    core = "".join(parts)
-    if len(core) < 330:
-        plain_interpretation = _clean_markdown(interpretation)
-        for sentence in re.split(r"(?<=[。！？])", plain_interpretation):
-            sentence = sentence.strip()
-            if sentence and sentence not in core:
-                core += sentence
-            if len(core) >= 410:
-                break
-
-    required_tail = RISK_NOTE + DISCLAIMER
-    core_limit = FINANCE_NARRATION_MAX_CHARS - len(required_tail)
-    core = re.sub(r"[。！？；]{2,}", "。", core)
-    core = _trim_complete(core, core_limit)
-    script = core.rstrip("。") + "。" + required_tail
-    _validate_finance_script(script)
-    return script
+    try:
+        return build_daily_markdown_script(response, publication_date)
+    except FinanceScriptError as exc:
+        raise ConfigError(str(exc)) from exc
 
 
 def _publication_date_from_path(path: Path) -> str:

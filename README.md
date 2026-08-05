@@ -15,6 +15,7 @@ AI Popline is a local-first content automation service for turning structured ta
 - [Task format](#task-format)
 - [Running pipelines](#running-pipelines)
 - [CLI reference](#cli-reference)
+- [Web operator console](#web-operator-console)
 - [REST API](#rest-api)
 - [MCP agent interface](#mcp-agent-interface)
 - [Jobs, status, and artifacts](#jobs-status-and-artifacts)
@@ -57,7 +58,7 @@ Only configure the tools needed by the pipelines you run:
 | FFmpeg | Gallery rendering, audio preparation, and media validation |
 | social-auto-upload | Optional publishing |
 
-Real browser-backed and publishing runs require valid authenticated local sessions in the corresponding tools. AI Popline is designed for a trusted local environment; do not expose its API or browser worker publicly without a separate security review.
+Real browser-backed and publishing runs require valid authenticated local sessions in the corresponding tools. AI Popline is a single-operator service: keep it on loopback today; the only supported remote boundary is authenticated access over an explicitly configured ZeroTier network, while browser workers and lower-tool ports remain loopback-only. See the [Web Access Boundary](docs/web-access-boundary.md).
 
 ## Quick start
 
@@ -246,7 +247,7 @@ The package installs the `ai-popline` command:
 | `ai-popline capabilities` | List registered pipelines and their contracts |
 | `ai-popline validate-task --task <file.json>` | Parse and normalize a task without running it |
 | `ai-popline run --task <file.json>` | Run a task synchronously and print the final job snapshot |
-| `ai-popline serve --host 127.0.0.1 --port 8080` | Start the local REST API |
+| `ai-popline serve` | Start the REST API using the guarded Web listener configuration |
 | `ai-popline mcp` | Start the MCP stdio server |
 | `ai-popline jobs list [--status STATUS] [--content-type TYPE] [--limit N]` | List recent jobs |
 | `ai-popline jobs show <task_id>` | Print a persisted job snapshot |
@@ -255,31 +256,56 @@ The package installs the `ai-popline` command:
 
 `run` exits with code `0` for `succeeded` or `partial`; other terminal states return a non-zero code.
 
-## REST API
+## Web operator console
 
-Start the trusted-local API:
+Start the guarded service and open the main interface:
 
 ```powershell
-ai-popline serve --host 127.0.0.1 --port 8080
+ai-popline serve
+# Open http://127.0.0.1:8080/
 ```
 
-Equivalent direct command:
+The no-Node console is packaged with the Python application. It provides a dedicated content studio plus seven pipeline-aware task forms, safe preflight validation, recent-job filters, live status polling, event timelines, validation evidence, and previews for registered artifacts contained in each job directory.
+
+The content studio provides two 90-second templates: financial research from an explicit read-only ttskill allowlist (gold, bond, China macro, and optional stock data), and the latest dated AI briefing article from `AI_BRIEFING_DIR`. It stores sanitized source material with an operator-edited 350–500 character script, then queues the reviewed script through the local `script_video` MoneyPrinterTurbo pipeline. It never exposes arbitrary Skill invocation, account/trading Skills, or automatic publishing.
+
+When `WEB_AUTH_REQUIRED=true`, the page first requests `WEB_ADMIN_TOKEN` and then uses a signed session plus CSRF protection. Publishing remains off unless `WEB_PUBLISH_ENABLED=true`; an enabled publish task is clearly labeled **generate and publish**, requires a typed warning confirmation, and is bound to the server-returned task fingerprint.
+
+Directory fields refer to paths on the AI Popline server, not the browser device. The console never exposes an arbitrary filesystem browser, lower-tool ports, configuration secrets, or paths through readiness diagnostics.
+
+## REST API
+
+Start the API with its safe loopback defaults:
 
 ```powershell
-uvicorn app:app --host 127.0.0.1 --port 8080
+ai-popline serve
+```
+
+A direct Uvicorn command is supported only for loopback development; disable proxy-header trust explicitly:
+
+```powershell
+uvicorn app:app --host 127.0.0.1 --port 8080 --no-proxy-headers --no-server-header
 ```
 
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
-| `GET` | `/health` | Process health |
-| `GET` | `/ready` | Data/profile path readiness information |
+| `GET` | `/health` | Minimal unauthenticated process health |
+| `GET` | `/ready` | Authenticated, redacted readiness flags |
+| `POST` | `/auth/login` | Exchange the admin token for a browser session and CSRF token |
+| `POST` | `/auth/logout` | Clear an authenticated browser session |
 | `GET` | `/capabilities` | Registered pipeline metadata |
-| `POST` | `/run` | Queue a `TaskInput`; returns `task_id` and `queued` |
+| `GET` | `/ui/bootstrap` | Authenticated, non-sensitive Web form and status contract |
+| `GET/POST/PATCH` | `/content/...` | Authenticated content templates, read-only research, drafts, refresh, and script-video handoff |
+| `POST` | `/validate-task` | Validate and normalize a task without creating a job |
+| `POST` | `/run` | Queue a `TaskInput`; publishing requires additional enablement and confirmation |
 | `GET` | `/status/{task_id}` | Read the current job snapshot |
 | `GET` | `/jobs` | List jobs; supports `status`, `content_type`, and `limit` query parameters |
 | `GET` | `/jobs/{task_id}/events` | Read recent append-only events; supports `limit` |
+| `GET` | `/jobs/{task_id}/artifacts` | List guarded, registered files contained in the job directory |
 
-The service uses a local thread pool for background jobs. Keep it bound to `127.0.0.1` unless the deployment has been separately secured.
+The service uses a local thread pool for background jobs. Non-loopback startup is fail-closed and supports only an exact configured ZeroTier interface IP with peer-network restrictions, application authentication, Host/Origin checks, and TLS or an explicit restricted HTTP exception. Follow the [ZeroTier Web Access Runbook](docs/zerotier-web-access.md); never expose lower-tool or browser-helper ports.
+
+`/health` is the only unauthenticated operational endpoint and returns minimal liveness data. When `WEB_AUTH_REQUIRED=true`, use a login session plus CSRF token for browser writes or `Authorization: Bearer <WEB_API_TOKEN>` for REST automation; Web/API publishing also requires `WEB_PUBLISH_ENABLED=true` and task-bound confirmation.
 
 ## MCP agent interface
 
@@ -399,7 +425,7 @@ The REST service can be built with the included Docker files:
 docker compose up --build
 ```
 
-Create `.env` first. The API is exposed on `${API_PORT:-8080}` and job output is mounted at `./output:/data`.
+Create `.env` first and configure independent `WEB_ADMIN_TOKEN`, `WEB_API_TOKEN`, and `WEB_SESSION_SECRET` values. Docker Compose requires authentication, publishes `${API_PORT:-8080}` on host loopback only, and mounts job output at `./output:/data`; the container deployment is not the supported ZeroTier listener path.
 
 The production pipelines still need their external tools, executables, media resources, browser sessions, and credentials to be accessible inside the container. Windows `.exe` paths from the example `.env` are not executable in a Linux container; use Linux-compatible installations and container paths, or run AI Popline directly on the configured Windows workstation.
 

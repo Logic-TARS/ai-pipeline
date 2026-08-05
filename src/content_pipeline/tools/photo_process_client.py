@@ -20,8 +20,7 @@ def photo_process_contract(settings: Settings) -> dict[str, object]:
     return {
         "name": "Photo-Process",
         "boundary": (
-            "local Browser Worker HTTP adapter when PHOTO_PROCESS_WORKER_URL is set; "
-            "otherwise CLI JSON adapter"
+            "local Browser Worker HTTP adapter when PHOTO_PROCESS_WORKER_URL is set; otherwise CLI JSON adapter"
         ),
         "cwd": str(settings.photo_process_dir),
         "python": str(settings.photo_process_python),

@@ -9,7 +9,7 @@ from .settings import Settings
 
 ROUTER_PROMPT = """Classify this content task.
 Return only JSON with keys: content_type, topic, params.
-Allowed content_type values: anime, finance, ai_briefing, ai_art, grouped_anime, japanese, unknown.
+Allowed content_type values: anime, finance, ai_briefing, ai_art, grouped_anime, japanese, script_video, unknown.
 Task: {description}
 """
 
@@ -20,6 +20,7 @@ AI_BRIEFING_KEYWORDS = ("ai简报", "ai 简报", "ai资讯", "ai 资讯", "人�
 AI_ART_KEYWORDS = ("ai绘画", "ai 绘画", "改图", "图片处理", "ai art", "image edit")
 GROUPED_ANIME_KEYWORDS = ("分组动漫", "grouped anime", "图片组合")
 JAPANESE_KEYWORDS = ("日语", "日文", "japanese")
+SCRIPT_VIDEO_KEYWORDS = ("口播视频", "口播稿视频", "script video")
 
 
 def route_task(task: TaskInput, settings: Settings) -> RouteResult:
@@ -42,7 +43,9 @@ def route_task(task: TaskInput, settings: Settings) -> RouteResult:
 
 def _route_with_rules(task: TaskInput) -> RouteResult:
     text = task.description.lower()
-    if any(keyword.lower() in text for keyword in GROUPED_ANIME_KEYWORDS):
+    if any(keyword.lower() in text for keyword in SCRIPT_VIDEO_KEYWORDS):
+        content_type = "script_video"
+    elif any(keyword.lower() in text for keyword in GROUPED_ANIME_KEYWORDS):
         content_type = "grouped_anime"
     elif any(keyword.lower() in text for keyword in JAPANESE_KEYWORDS):
         content_type = "japanese"

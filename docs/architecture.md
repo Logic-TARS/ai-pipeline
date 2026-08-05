@@ -2,7 +2,7 @@
 
 ## Overview
 
-AI Popline is a local AI content production pipeline that orchestrates three external tools — Gemini, Photo-Process, MoneyPrinterTurbo (MPT), and social-auto-upload (SAU) — to generate and publish short-form video content across 6 content pipelines.
+AI Popline is a local AI content production pipeline that orchestrates Gemini, Photo-Process, MoneyPrinterTurbo (MPT), social-auto-upload (SAU), and allowlisted read-only ttskill research to generate and publish short-form video content across 7 content pipelines.
 
 ```
 TaskInput (JSON/MCP/REST)
@@ -12,7 +12,7 @@ TaskInput (JSON/MCP/REST)
   → JobSnapshot (persisted to output/jobs/<id>/)
 ```
 
-## Six Content Pipelines
+## Seven Content Pipelines
 
 | Pipeline | Content Type | Flow | External Tools |
 |---|---|---|---|
@@ -22,6 +22,7 @@ TaskInput (JSON/MCP/REST)
 | **AI Art** | `ai_art` | Photo-Process folder editing → slideshow groups → optional private publish | Photo-Process, ffmpeg, SAU |
 | **Grouped Anime** | `grouped_anime` | Source images grouped by prefix → per-group MPT video → optional publish | MPT, SAU |
 | **Japanese** | `japanese` | Photo-Process Gem editing → local image output only | Photo-Process |
+| **Script Video** | `script_video` | Reviewed 350–500 character narration → local 9:16 video | MPT |
 
 ## Pipeline Steps
 
@@ -44,6 +45,7 @@ ROUTE → SOURCE_SCAN → IMAGE → VIDEO → ARCHIVE → UPLOAD → COMPLETE
 | MoneyPrinterTurbo | `MPT_DIR` | `adapters/mpt.py`, `adapters/mpt_narrated.py` | Video generation |
 | social-auto-upload | `SAU_DIR` | `adapters/sau.py` | Multi-platform publishing |
 | ffmpeg | (system) | `adapters/slideshow.py`, `adapters/audio.py` | Slideshow rendering, music prep |
+| ttskill | `TTSKILL_COMMAND` | `content_studio/ttskill_client.py` | Allowlisted read-only financial research |
 
 ## Entry Points
 
@@ -51,7 +53,7 @@ ROUTE → SOURCE_SCAN → IMAGE → VIDEO → ARCHIVE → UPLOAD → COMPLETE
 |---|---|---|
 | CLI | `python -m content_pipeline.orchestrator --task <file>` | Run a task JSON synchronously |
 | MCP | `python -m content_pipeline.mcp_server` | MCP stdio server (18 tools) |
-| REST | `uvicorn app:app --host 127.0.0.1 --port 8080` | FastAPI with POST /run and GET /status/:id |
+| Web / REST | `ai-popline serve` | Packaged operator console and guarded API for loopback or an explicitly configured ZeroTier interface |
 | Doctor | `ai-popline doctor` | Environment and tool diagnostics |
 | Capabilities | `ai-popline capabilities` | List available pipelines |
 
@@ -98,7 +100,8 @@ Fail-closed: any uncertainty → BLOCKED status.
 
 ```
 src/content_pipeline/
-  api/          # FastAPI app factory
+  api/          # FastAPI app factory, Web schema/preflight, access controls
+  web/static/   # Packaged no-Node operator console
   cli/          # CLI entry points (doctor, capabilities, orchestrator runner)
   core/         # settings, models, errors, router
   pipelines/    # 6 pipeline implementations + registry

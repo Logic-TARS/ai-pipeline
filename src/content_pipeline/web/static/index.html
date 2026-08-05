@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#09111f">
+  <title>AI Popline · 内容控制台</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+  <script src="/static/content-studio.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+
+  <section id="login-view" class="auth-view" hidden aria-labelledby="login-title">
+    <div class="ambient ambient-one"></div>
+    <div class="ambient ambient-two"></div>
+    <form id="login-form" class="auth-card">
+      <button class="icon-button theme-toggle auth-theme-toggle" type="button" aria-label="切换到浅色模式" title="切换到浅色模式">
+        <span class="theme-icon" aria-hidden="true">☀</span><span class="theme-label">浅色模式</span>
+      </button>
+      <div class="brand-mark" aria-hidden="true"><span>AI</span></div>
+      <p class="eyebrow">LOCAL-FIRST CONTENT OPS</p>
+      <h1 id="login-title">登录 AI Popline</h1>
+      <p class="muted">使用管理员令牌进入本地内容生产控制台。凭据仅发送到当前服务。</p>
+      <label for="admin-token">管理员令牌</label>
+      <div class="password-wrap">
+        <input id="admin-token" name="token" type="password" autocomplete="current-password" required autofocus>
+        <button id="toggle-token" class="icon-button" type="button" aria-label="显示令牌">显示</button>
+      </div>
+      <p id="login-error" class="form-error" role="alert" hidden></p>
+      <button id="login-button" class="button primary full" type="submit">安全登录</button>
+      <div class="auth-foot"><span class="status-dot"></span> 支持回环地址与受保护的 ZeroTier 网络</div>
+    </form>
+  </section>
+
+  <div id="app-shell" class="app-shell" hidden>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="AI Popline 首页">
+        <span class="brand-symbol" aria-hidden="true">P</span>
+        <span><strong>AI Popline</strong><small>内容生产控制台</small></span>
+      </a>
+      <nav class="primary-nav" aria-label="控制台工作区">
+        <button class="nav-button active" type="button" data-console-view="studio">内容工作台</button>
+        <button class="nav-button" type="button" data-console-view="jobs">任务中心</button>
+      </nav>
+      <div class="topbar-actions">
+        <button class="button ghost compact theme-toggle" type="button" aria-label="切换到浅色模式" title="切换到浅色模式">
+          <span class="theme-icon" aria-hidden="true">☀</span><span class="theme-label">浅色模式</span>
+        </button>
+        <div id="service-chip" class="service-chip" aria-live="polite">
+          <span class="status-dot"></span><span>正在连接</span>
+        </div>
+        <button id="refresh-button" class="button ghost compact" type="button">刷新</button>
+        <button id="logout-button" class="button ghost compact" type="button">退出</button>
+      </div>
+    </header>
+
+    <main id="main-content" class="page-shell">
+      <section id="studio-view" class="console-view" aria-labelledby="studio-title">
+        <section class="hero studio-hero">
+          <div>
+            <p class="eyebrow">CONTENT STUDIO</p>
+            <h1 id="studio-title">内容工作台</h1>
+            <p class="hero-copy">选择内容类型，获取只读资料，核对口播稿后交给视频流水线。</p>
+          </div>
+        </section>
+
+        <section id="studio-status" class="readiness-strip" aria-live="polite">
+          <div class="skeleton-line"></div>
+        </section>
+
+        <section class="panel template-overview" aria-labelledby="template-overview-title">
+          <header class="panel-header">
+            <div>
+              <p class="eyebrow">CONTENT TYPES</p>
+              <h2 id="template-overview-title">选择内容类型</h2>
+            </div>
+            <span class="updated-label">可继续扩展新的模板</span>
+          </header>
+          <div id="template-cards" class="template-cards">
+            <div class="skeleton-line"></div>
+          </div>
+        </section>
+
+        <section class="studio-layout">
+          <aside class="panel draft-library" aria-labelledby="draft-library-title">
+            <header class="panel-header"><div><p class="eyebrow">DRAFTS</p><h2 id="draft-library-title">内容草稿</h2></div></header>
+            <div id="draft-list" class="draft-list"><div class="skeleton-line"></div></div>
+          </aside>
+
+          <article class="panel studio-editor-panel">
+            <div id="studio-empty" class="detail-empty">
+              <span aria-hidden="true">✦</span><h2>选择一个内容类型开始</h2><p>金融、AI 简报和后续模板都会在上方总览里创建草稿。</p>
+            </div>
+            <div id="studio-editor" hidden>
+              <header class="studio-editor-head">
+                <div><p class="eyebrow">90-SECOND FINANCE</p><h2>金融资讯口播</h2></div>
+                <span id="draft-status-badge" class="badge neutral">等待创建</span>
+              </header>
+
+              <section class="studio-form-block">
+                <div class="form-grid two-columns">
+                  <label class="field">内容模板
+                    <select id="content-template"></select>
+                  </label>
+                  <label class="field">视频标题<span class="required">*</span>
+                    <input id="content-title" maxlength="120" placeholder="例如：今日金融市场观察">
+                  </label>
+                  <label id="content-focus-field" class="field span-two">关注股票（可选，最多 5 个）
+                    <input id="content-focus-assets" placeholder="东方财富, 宁德时代">
+                    <small>创建后关注对象固定；需要调整时新建一份草稿。</small>
+                  </label>
+                </div>
+              </section>
+
+              <section class="studio-form-block">
+                <div class="studio-section-head"><div><h3>最新资料</h3><p id="research-updated">尚未采集</p></div><button id="refresh-research" class="button ghost compact" type="button">重新获取资料</button></div>
+                <div id="research-alert" class="warning-box" hidden></div>
+                <div id="research-grid" class="research-grid"></div>
+              </section>
+
+              <section class="studio-form-block script-editor-block">
+                <div class="studio-section-head"><div><h3>90 秒口播稿</h3><p>资料返回后会自动填入初稿；生成视频前请核对事实和风险提示。</p></div><strong id="script-counter" class="script-counter">0 / 350–500</strong></div>
+                <label class="sr-only" for="content-script">90 秒口播稿</label>
+                <textarea id="content-script" rows="16" maxlength="1200" placeholder="创建草稿后，系统会在这里填入 350–500 字初稿。"></textarea>
+                <div id="script-checks" class="script-checks" aria-live="polite"></div>
+              </section>
+
+              <footer class="studio-actions">
+                <span id="draft-save-state" class="updated-label">尚未保存</span>
+                <div><button id="save-content-draft" class="button secondary" type="button">生成口播初稿</button><button id="generate-content-video" class="button primary" type="button">保存并生成视频</button></div>
+              </footer>
+            </div>
+          </article>
+        </section>
+      </section>
+
+      <section id="jobs-view" class="console-view" hidden>
+      <section class="hero" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow">CONTENT ORCHESTRATION</p>
+          <h1 id="page-title">今天要制作什么？</h1>
+          <p class="hero-copy">从素材处理到视频验证，在一个安全工作台中观察每一步。</p>
+        </div>
+        <button id="create-task-button" class="button primary hero-button" type="button">
+          <span aria-hidden="true">＋</span> 新建任务
+        </button>
+      </section>
+
+      <section id="readiness-strip" class="readiness-strip" aria-label="系统就绪状态">
+        <div class="skeleton-line"></div>
+      </section>
+
+      <section class="stats-grid" aria-label="任务统计">
+        <article class="stat-card accent-all"><span>全部任务</span><strong id="stat-all">—</strong><small>最近记录</small></article>
+        <article class="stat-card accent-running"><span>正在运行</span><strong id="stat-running">—</strong><small>需要持续关注</small></article>
+        <article class="stat-card accent-success"><span>成功完成</span><strong id="stat-succeeded">—</strong><small>包含部分成功</small></article>
+        <article class="stat-card accent-attention"><span>需要处理</span><strong id="stat-attention">—</strong><small>失败或被阻止</small></article>
+      </section>
+
+      <section class="workspace">
+        <article class="panel jobs-panel" aria-labelledby="jobs-title">
+          <header class="panel-header">
+            <div>
+              <p class="eyebrow">RECENT ACTIVITY</p>
+              <h2 id="jobs-title">最近任务</h2>
+            </div>
+            <span id="last-updated" class="updated-label">尚未刷新</span>
+          </header>
+
+          <div class="filters" role="search">
+            <label class="sr-only" for="status-filter">按状态筛选</label>
+            <select id="status-filter"><option value="">全部状态</option></select>
+            <label class="sr-only" for="pipeline-filter">按流水线筛选</label>
+            <select id="pipeline-filter"><option value="">全部流水线</option></select>
+            <label class="search-field" for="job-search">
+              <span aria-hidden="true">⌕</span>
+              <input id="job-search" type="search" placeholder="搜索描述或任务 ID">
+            </label>
+          </div>
+
+          <div class="table-wrap">
+            <table class="jobs-table">
+              <thead><tr><th>任务</th><th>流水线</th><th>状态</th><th>更新时间</th><th><span class="sr-only">查看</span></th></tr></thead>
+              <tbody id="jobs-body"></tbody>
+            </table>
+            <div id="jobs-empty" class="empty-state" hidden>
+              <span class="empty-icon" aria-hidden="true">◎</span>
+              <h3>还没有匹配的任务</h3>
+              <p>创建一个安全干运行任务，或调整当前筛选条件。</p>
+            </div>
+          </div>
+        </article>
+
+        <aside id="detail-panel" class="panel detail-panel" aria-labelledby="detail-title">
+          <div id="detail-empty" class="detail-empty">
+            <span aria-hidden="true">↗</span>
+            <h2 id="detail-title">选择一个任务</h2>
+            <p>查看步骤、事件、验证结果和安全产物。</p>
+          </div>
+          <div id="detail-content" hidden></div>
+        </aside>
+      </section>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="task-dialog" class="modal task-modal" aria-labelledby="task-dialog-title">
+    <form id="task-form" method="dialog">
+      <header class="modal-header">
+        <div><p class="eyebrow">NEW WORKFLOW</p><h2 id="task-dialog-title">创建内容任务</h2></div>
+        <button class="icon-button close-dialog" type="button" aria-label="关闭">×</button>
+      </header>
+      <div class="modal-body">
+        <section class="form-section">
+          <div class="section-heading"><span>01</span><div><h3>选择流水线</h3><p>每条流水线只显示相关参数。</p></div></div>
+          <div id="pipeline-cards" class="pipeline-cards" role="radiogroup" aria-label="内容流水线"></div>
+        </section>
+
+        <section class="form-section">
+          <div class="section-heading"><span>02</span><div><h3>任务信息</h3><p>这些信息用于路由、记录和内容生成。</p></div></div>
+          <div class="form-grid two-columns">
+            <label class="field span-two">任务描述<span class="required">*</span>
+              <input id="task-description" name="description" required maxlength="300" placeholder="例如：生成今日 AI 资讯视频">
+            </label>
+            <label class="field span-two">内容主题
+              <input id="task-topic" name="topic" maxlength="200" placeholder="留空时使用任务描述">
+            </label>
+          </div>
+        </section>
+
+        <section class="form-section">
+          <div class="section-heading"><span>03</span><div><h3>流水线参数</h3><p id="pipeline-help">选择流水线后填写参数。</p></div></div>
+          <div id="dynamic-fields" class="form-grid two-columns"></div>
+        </section>
+
+        <section class="form-section publish-section">
+          <div class="section-heading"><span>04</span><div><h3>发布设置</h3><p>默认关闭。建议先生成并审查本地产物。</p></div></div>
+          <label class="switch-row" for="publish-toggle">
+            <span><strong>生成后尝试发布</strong><small id="publish-help">此功能受服务端安全策略保护。</small></span>
+            <input id="publish-toggle" type="checkbox" role="switch">
+          </label>
+          <div id="publish-targets-wrap" hidden>
+            <div id="publish-targets" class="target-list"></div>
+            <button id="add-target-button" class="button ghost compact" type="button">＋ 添加发布目标</button>
+          </div>
+        </section>
+
+        <details class="advanced-section">
+          <summary>高级参数 JSON</summary>
+          <p>这里的键会覆盖上面的同名参数。必须是 JSON 对象。</p>
+          <label class="sr-only" for="advanced-params">高级参数 JSON</label>
+          <textarea id="advanced-params" rows="7" spellcheck="false">{}</textarea>
+        </details>
+
+        <section class="preview-section" aria-labelledby="preview-title">
+          <div class="preview-head"><h3 id="preview-title">任务预览</h3><span id="validation-badge" class="badge neutral">尚未预检</span></div>
+          <div id="validation-messages" class="validation-messages" aria-live="polite"></div>
+          <pre id="task-json-preview" tabindex="0">{}</pre>
+        </section>
+      </div>
+      <footer class="modal-footer">
+        <button class="button ghost close-dialog" type="button">取消</button>
+        <button id="validate-task-button" class="button secondary" type="button">预检任务</button>
+        <button id="submit-task-button" class="button primary" type="submit">开始运行</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="publish-dialog" class="modal confirm-modal" aria-labelledby="publish-dialog-title">
+    <div class="danger-symbol" aria-hidden="true">!</div>
+    <h2 id="publish-dialog-title">确认生成并发布</h2>
+    <p>任务完成生成和验证后会调用真实上传器。平台隐私保护仍由服务端强制执行。</p>
+    <label class="field">请输入“确认发布”
+      <input id="publish-confirm-input" autocomplete="off">
+    </label>
+    <div class="modal-footer compact-footer">
+      <button id="cancel-publish-button" class="button ghost" type="button">返回检查</button>
+      <button id="confirm-publish-button" class="button danger" type="button" disabled>确认并运行</button>
+    </div>
+  </dialog>
+
+  <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>

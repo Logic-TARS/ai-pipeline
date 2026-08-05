@@ -2,9 +2,14 @@ services:
   ai-popline:
     build: .
     ports:
-      - "${API_PORT:-8080}:8080"
+      - "127.0.0.1:${API_PORT:-8080}:8080"
     env_file:
       - .env
+    environment:
+      # The host port is loopback-only. The bridge hop is treated as an authenticated HTTP peer.
+      WEB_ALLOWED_NETWORKS: 172.16.0.0/12
+      WEB_AUTH_REQUIRED: "true"
+      WEB_ALLOW_ZEROTIER_HTTP: "true"
     volumes:
       - ./output:/data
       - ./profiles:/app/profiles:ro

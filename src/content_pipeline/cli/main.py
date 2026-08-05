@@ -33,8 +33,10 @@ def main() -> int:
     run_parser.add_argument("--task", required=True, type=Path, help="Path to task JSON file")
 
     serve_parser = subparsers.add_parser("serve", help="Start the HTTP API server")
-    serve_parser.add_argument("--host", default="127.0.0.1")
-    serve_parser.add_argument("--port", default=8080, type=int)
+    serve_parser.add_argument("--host", help="Exact loopback or ZeroTier interface IP")
+    serve_parser.add_argument("--port", type=int)
+    serve_parser.add_argument("--ssl-certfile", type=Path)
+    serve_parser.add_argument("--ssl-keyfile", type=Path)
 
     subparsers.add_parser("mcp", help="Start the MCP server")
 
@@ -78,7 +80,40 @@ def main() -> int:
     if args.command == "serve":
         import uvicorn
 
-        uvicorn.run("content_pipeline.api.app:app", host=args.host, port=args.port)
+        from content_pipeline.api.network import ensure_bind_address_is_local, validate_bind_configuration
+
+        settings = load_settings()
+        host = args.host or settings.web_bind_host
+        port = args.port if args.port is not None else settings.web_port
+        if not 1 <= port <= 65535:
+            raise SystemExit("web port must be between 1 and 65535")
+        ssl_certfile = args.ssl_certfile or settings.web_tls_certfile
+        ssl_keyfile = args.ssl_keyfile or settings.web_tls_keyfile
+        errors = validate_bind_configuration(
+            settings,
+            host=host,
+            ssl_certfile=ssl_certfile,
+            ssl_keyfile=ssl_keyfile,
+        )
+        if errors:
+            raise SystemExit("unsafe web listener:\n- " + "\n- ".join(errors))
+        try:
+            ensure_bind_address_is_local(host)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        for path, label in ((ssl_certfile, "TLS certificate"), (ssl_keyfile, "TLS key")):
+            if path is not None and not path.is_file():
+                raise SystemExit(f"{label} does not exist: {path}")
+
+        uvicorn.run(
+            "content_pipeline.api.app:app",
+            host=host,
+            port=port,
+            ssl_certfile=str(ssl_certfile) if ssl_certfile else None,
+            ssl_keyfile=str(ssl_keyfile) if ssl_keyfile else None,
+            proxy_headers=False,
+            server_header=False,
+        )
         return 0
     if args.command == "mcp":
         from content_pipeline.mcp_server import main as mcp_main

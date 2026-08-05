@@ -7,6 +7,7 @@ import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 
+from content_pipeline.api.network import validate_bind_configuration
 from content_pipeline.settings import load_settings
 
 
@@ -83,14 +84,29 @@ def run_doctor() -> int:
     else:
         print(_check("All configured paths valid", True))
 
-    # 5. Output directory
+    # 5. Web listener safety
+    print("\n[Web Security]")
+    web_errors = validate_bind_configuration(
+        settings,
+        host=settings.web_bind_host,
+        ssl_certfile=settings.web_tls_certfile,
+        ssl_keyfile=settings.web_tls_keyfile,
+    )
+    web_ok = not web_errors
+    if not web_ok:
+        all_ok = False
+    print(_check(f"Bind policy: {settings.web_bind_host}:{settings.web_port}", web_ok))
+    for error in web_errors:
+        print(f"  ! {error}")
+
+    # 6. Output directory
     print("\n[Output]")
     data_ok = settings.data_dir.exists() or _ensure_dir(settings.data_dir)
     if not data_ok:
         all_ok = False
     print(_check(f"Data dir writable: {settings.data_dir}", data_ok))
 
-    # 6. Profiles
+    # 7. Profiles
     print("\n[Profiles]")
     profiles_ok = settings.profiles_dir.exists()
     if not profiles_ok:
