@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
@@ -7,7 +9,15 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 ContentType = Literal[
-    "anime", "finance", "ai_briefing", "ai_art", "grouped_anime", "japanese", "script_video", "unknown"
+    "anime",
+    "finance",
+    "ai_briefing",
+    "ai_art",
+    "xhs_image_note",
+    "grouped_anime",
+    "japanese",
+    "script_video",
+    "unknown",
 ]
 
 
@@ -61,7 +71,7 @@ class AdapterResult(BaseModel):
 
 
 class PublishTarget(BaseModel):
-    platform: Literal["douyin", "kuaishou", "bilibili", "tencent"]
+    platform: Literal["douyin", "kuaishou", "bilibili", "tencent", "xiaohongshu"]
     account: str = Field(min_length=1)
     tid: int | None = None
 
@@ -79,6 +89,50 @@ class TaskInput(BaseModel):
     publish: bool = False
     publish_targets: list[PublishTarget] = Field(default_factory=list)
     params: dict[str, Any] = Field(default_factory=dict)
+    origin: Literal["content_studio"] | None = None
+    source_draft_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    source_draft_revision: int | None = Field(default=None, ge=1)
+
+
+class DeferredPublishInput(BaseModel):
+    publish_targets: list[PublishTarget] = Field(min_length=1, max_length=4)
+    title: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=2000)
+    tags: list[str] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def normalize_publish_fields(self) -> DeferredPublishInput:
+        platforms = [target.platform for target in self.publish_targets]
+        if len(platforms) != len(set(platforms)):
+            raise ValueError("each publish platform can appear only once")
+        self.title = self.title.strip()
+        self.description = self.description.strip()
+        normalized_tags: list[str] = []
+        for value in self.tags:
+            tag = value.strip().lstrip("#")
+            if not tag:
+                continue
+            if len(tag) > 30:
+                raise ValueError("publish tags cannot exceed 30 characters")
+            if tag not in normalized_tags:
+                normalized_tags.append(tag)
+        self.tags = normalized_tags
+        return self
+
+
+PublicationStatus = Literal["queued", "running", "succeeded", "partial", "failed"]
+
+
+class PublicationAttempt(BaseModel):
+    attempt_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    status: PublicationStatus = "queued"
+    request: DeferredPublishInput
+    video_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    requested_at: str
+    started_at: str | None = None
+    finished_at: str | None = None
+    results: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    error: str | None = None
 
 
 class AiArtParams(BaseModel):
@@ -91,6 +145,21 @@ class AiArtParams(BaseModel):
     description: str = ""
     tags: list[str] = Field(default_factory=list)
     group_size: int = Field(default=4, ge=1, le=20)
+
+
+class XhsImageNoteParams(BaseModel):
+    source_dir: Path
+    source_files: list[str] = Field(default_factory=list)
+    archive_dir: Path | None = None
+    failed_dir: Path | None = None
+    image_prompt: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    note: str = ""
+    tags: list[str] = Field(default_factory=list)
+    schedule: str | None = None
+    debug: bool = False
+    headed: bool = False
+    dry_run: bool = False
 
 
 class JapaneseParams(BaseModel):
@@ -141,6 +210,7 @@ class AiBriefingParams(BaseModel):
     tags: list[str] = Field(default_factory=lambda: ["AI", "人工智能", "科技"])
     dry_run: bool = False
     force_regenerate: bool = False
+    voice_rate: float | None = Field(default=None, ge=0.55, le=1.2)
 
 
 class ScriptVideoParams(BaseModel):
@@ -152,6 +222,7 @@ class ScriptVideoParams(BaseModel):
     kuaishou_account: str = "破壁人"
     dry_run: bool = False
     force_regenerate: bool = False
+    voice_rate: float | None = Field(default=None, ge=0.55, le=1.2)
 
 
 class RouteResult(BaseModel):
@@ -186,6 +257,14 @@ class VideoValidation(BaseModel):
 class MediaValidation(BaseModel):
     images: ImageValidation | None = None
     video: VideoValidation | None = None
+
+
+class JobProgress(BaseModel):
+    percent: int = Field(ge=0, le=100)
+    phase: str = Field(min_length=1, max_length=120)
+    message: str = Field(min_length=1, max_length=500)
+    updated_at: str
+    is_estimate: bool = False
 
 
 class AiArtSourceResult(BaseModel):
@@ -230,13 +309,35 @@ class ArtifactSet(BaseModel):
 class JobSnapshot(BaseModel):
     task_id: str
     status: JobStatus
+    display_name: str | None = Field(default=None, min_length=1, max_length=120)
     store_version: int = 1
     created_at: str | None = None
     updated_at: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
     current_step: PipelineStep | None = None
+    progress: JobProgress | None = None
     task: TaskInput
     route: RouteResult | None = None
     artifacts: ArtifactSet = Field(default_factory=ArtifactSet)
+    publication_attempts: list[PublicationAttempt] = Field(default_factory=list)
     error: str | None = None
+
+
+def deferred_publish_fingerprint(task_id: str, video_sha256: str, request: DeferredPublishInput) -> str:
+    payload = json.dumps(
+        {
+            "task_id": task_id,
+            "video_sha256": video_sha256,
+            "request": request.model_dump(mode="json"),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
+def task_fingerprint(task: TaskInput) -> str:
+    payload = json.dumps(task.model_dump(mode="json"), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]

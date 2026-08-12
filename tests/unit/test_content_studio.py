@@ -107,8 +107,9 @@ def test_content_collection_keeps_partial_results(tmp_path: Path, monkeypatch) -
     service.shutdown()
 
     assert collected.status == "partial"
+    assert {source.source_id for source in collected.research} == {"gold", "bond", "macro-cn", "stock-1"}
     assert sum(source.status == "succeeded" for source in collected.research) == 3
-    assert sum(source.status == "failed" for source in collected.research) == 2
+    assert sum(source.status == "failed" for source in collected.research) == 1
     assert collected.research_error
     assert 380 <= len(collected.script) <= 430
     assert "黄金期货主力收于910.4元每克" in collected.script
@@ -331,3 +332,176 @@ def test_content_api_creates_draft_and_queues_dry_run_video(tmp_path: Path, monk
     assert generated.status_code == 202
     assert snapshot["status"] == "succeeded"
     assert snapshot["task"]["content_type"] == "script_video"
+
+
+def test_content_video_generation_collects_finance_sources_when_markdown_is_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(ContentStudioService, "_queue_collection", lambda _service, _draft_id: None)
+    settings = Settings(
+        data_dir=tmp_path / "output",
+        mpt_dir=tmp_path / "mpt",
+        finance_md_dir=tmp_path / "missing-finance",
+        web_allowed_hosts="testserver",
+        web_allowed_origins="http://testserver",
+        web_auth_required=True,
+        web_admin_token="admin-" + "a" * 32,
+        web_api_token="api-" + "b" * 32,
+        web_session_secret="session-" + "c" * 32,
+    )
+    app = create_app(settings)
+    app.state.orchestrator.run = lambda _task_id: None
+    headers = {"Authorization": "Bearer " + "api-" + "b" * 32}
+
+    def invoke(skill_id: str, _body: dict):
+        if skill_id == "TTFUND_BOND_MARKET":
+            return {"data": {"module_1": [{"updateTime": "2026-08-05", "textSummary": "债市偏强"}]}}
+        if skill_id == "TTFUND_MACRO_DATA":
+            return {
+                "data": {
+                    "frequencies": [
+                        {
+                            "频率": "月频数据",
+                            "记录": [
+                                {
+                                    "日期": "2026-07-01",
+                                    "CPI:当月同比(%)": 1.0,
+                                    "PPI:当月同比(%)": 4.1,
+                                    "PMI(%)": 49.2,
+                                    "M2:同比(%)": 8.0,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            }
+        return {
+            "data": {
+                "as_of": "2026-08-05",
+                "gold_quotes": {
+                    "gold_futures_shfe": {"date": "2026-08-05", "close": 910.4, "change_pct": 2.7, "volume": 295465},
+                    "sge_benchmark": {"date": "2026-08-04", "evening_price": 883.88},
+                },
+                "risk_indicators": {
+                    "vix": {"INDICATOR_VAL": 16.5},
+                    "dxy": {"INDICATOR_VAL": 99.87},
+                    "exchprice": {"EXCHPRICE": 6.7889},
+                },
+                "news": {"items": [{"publish_date": "2026-08-05", "summary": "美伊局势持续缓和。"}]},
+            }
+        }
+
+    monkeypatch.setattr(app.state.content_studio.client, "invoke", invoke)
+    with TestClient(app, base_url="http://testserver", client=("127.0.0.1", 50000)) as client:
+        created = client.post(
+            "/content/drafts",
+            headers=headers,
+            json={"template_id": "finance_90s", "title": "今日金融资讯", "focus_assets": []},
+        )
+        draft = created.json()
+        generated = client.post(
+            f"/content/drafts/{draft['draft_id']}/video",
+            headers=headers,
+            json={"revision": draft["revision"], "dry_run": True},
+        )
+        task_id = generated.json()["task_id"]
+        status = client.get(f"/status/{task_id}", headers=headers).json()
+        collected = client.get(f"/content/drafts/{draft['draft_id']}", headers=headers).json()
+
+    assert created.status_code == 202
+    assert generated.status_code == 202
+    assert status["task"]["content_type"] == "script_video"
+    assert 380 <= len(status["task"]["params"]["script"]) <= 430
+    assert "黄金期货主力收于910.4元每克" in status["task"]["params"]["script"]
+    assert collected["status"] == "ready"
+    assert {source["source_id"] for source in collected["research"]} == {"gold", "bond", "macro-cn"}
+    assert {source["source_id"] for source in collected["research"] if source["status"] == "succeeded"} == {
+        "gold",
+        "bond",
+        "macro-cn",
+    }
+
+
+def test_content_api_deletes_single_and_multiple_drafts(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(ContentStudioService, "_queue_collection", lambda _service, _draft_id: None)
+    settings = Settings(
+        data_dir=tmp_path / "output",
+        web_allowed_hosts="testserver",
+        web_allowed_origins="http://testserver",
+        web_auth_required=True,
+        web_admin_token="admin-" + "a" * 32,
+        web_api_token="api-" + "b" * 32,
+        web_session_secret="session-" + "c" * 32,
+    )
+    app = create_app(settings)
+    headers = {"Authorization": "Bearer " + "api-" + "b" * 32}
+    with TestClient(app, base_url="http://testserver", client=("127.0.0.1", 50000)) as client:
+        first = client.post(
+            "/content/drafts",
+            headers=headers,
+            json={"template_id": "finance_90s", "title": "第一份", "focus_assets": []},
+        ).json()
+        second = client.post(
+            "/content/drafts",
+            headers=headers,
+            json={"template_id": "finance_90s", "title": "第二份", "focus_assets": []},
+        ).json()
+        third = client.post(
+            "/content/drafts",
+            headers=headers,
+            json={"template_id": "finance_90s", "title": "第三份", "focus_assets": []},
+        ).json()
+        for draft_id in (first["draft_id"], second["draft_id"], third["draft_id"]):
+            app.state.content_studio.store.mutate(draft_id, lambda draft: setattr(draft, "status", "failed"))
+
+        deleted = client.delete(f"/content/drafts/{first['draft_id']}", headers=headers)
+        missing = client.get(f"/content/drafts/{first['draft_id']}", headers=headers)
+        batch = client.post(
+            "/content/drafts/batch-delete",
+            headers=headers,
+            json={"draft_ids": [second["draft_id"], third["draft_id"], first["draft_id"]]},
+        )
+        listed = client.get("/content/drafts", headers=headers).json()["drafts"]
+
+    assert deleted.status_code == 200
+    assert deleted.json() == {"draft_id": first["draft_id"], "deleted": True}
+    assert missing.status_code == 404
+    assert batch.status_code == 200
+    assert set(batch.json()["deleted"]) == {second["draft_id"], third["draft_id"]}
+    assert batch.json()["not_found"] == [first["draft_id"]]
+    assert {draft["draft_id"] for draft in listed}.isdisjoint(
+        {first["draft_id"], second["draft_id"], third["draft_id"]}
+    )
+
+
+
+def test_content_api_blocks_deleting_collecting_drafts(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(ContentStudioService, "_queue_collection", lambda _service, _draft_id: None)
+    settings = Settings(
+        data_dir=tmp_path / "output",
+        web_allowed_hosts="testserver",
+        web_allowed_origins="http://testserver",
+        web_auth_required=True,
+        web_admin_token="admin-" + "a" * 32,
+        web_api_token="api-" + "b" * 32,
+        web_session_secret="session-" + "c" * 32,
+    )
+    app = create_app(settings)
+    headers = {"Authorization": "Bearer " + "api-" + "b" * 32}
+    with TestClient(app, base_url="http://testserver", client=("127.0.0.1", 50000)) as client:
+        draft = client.post(
+            "/content/drafts",
+            headers=headers,
+            json={"template_id": "finance_90s", "title": "采集中", "focus_assets": []},
+        ).json()
+        single = client.delete(f"/content/drafts/{draft['draft_id']}", headers=headers)
+        batch = client.post(
+            "/content/drafts/batch-delete",
+            headers=headers,
+            json={"draft_ids": [draft["draft_id"]]},
+        )
+
+    assert single.status_code == 409
+    assert batch.status_code == 200
+    assert batch.json()["blocked"] == [draft["draft_id"]]
+    assert app.state.content_studio.store.get(draft["draft_id"]).status == "collecting"

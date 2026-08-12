@@ -12,7 +12,9 @@ from content_pipeline.models import (
     JapaneseParams,
     ScriptVideoParams,
     TaskInput,
+    XhsImageNoteParams,
 )
+from content_pipeline.pipeline_config import load_pipeline_defaults
 from content_pipeline.pipelines.registry import list_pipelines
 
 
@@ -28,6 +30,7 @@ PARAM_MODELS: dict[str, type[BaseModel]] = {
     "finance": FinanceParams,
     "ai_briefing": AiBriefingParams,
     "ai_art": AiArtParams,
+    "xhs_image_note": XhsImageNoteParams,
     "grouped_anime": GroupedAnimeParams,
     "japanese": JapaneseParams,
     "script_video": ScriptVideoParams,
@@ -38,6 +41,7 @@ PIPELINE_LABELS = {
     "finance": "每日金融",
     "ai_briefing": "AI 简报",
     "ai_art": "AI 艺术处理",
+    "xhs_image_note": "小红书图文",
     "grouped_anime": "分组动漫",
     "japanese": "日语视觉化",
     "script_video": "口播视频",
@@ -48,6 +52,7 @@ PIPELINE_ICONS = {
     "finance": "FN",
     "ai_briefing": "AI",
     "ai_art": "AR",
+    "xhs_image_note": "XH",
     "grouped_anime": "GR",
     "japanese": "JP",
     "script_video": "VO",
@@ -63,8 +68,9 @@ def _field(
     default: Any = None,
     placeholder: str = "",
     help_text: str = "",
-    minimum: int | None = None,
-    maximum: int | None = None,
+    minimum: float | None = None,
+    maximum: float | None = None,
+    step: float | None = None,
     options: list[dict[str, Any]] | None = None,
     rows: int | None = None,
 ) -> dict[str, Any]:
@@ -78,6 +84,7 @@ def _field(
         "help": help_text,
         "minimum": minimum,
         "maximum": maximum,
+        "step": step,
         "options": options or [],
         "rows": rows,
     }
@@ -124,6 +131,16 @@ PIPELINE_FIELDS: dict[str, list[dict[str, Any]]] = {
         _field("tencent_account", "腾讯视频账号"),
         _field("dry_run", "安全干运行", "checkbox", default=True),
         _field("force_regenerate", "强制重新生成", "checkbox", default=False),
+        _field(
+            "voice_rate",
+            "朗读速度",
+            "number",
+            placeholder="留空自动；1.0 为正常",
+            help_text="越小越慢，越大越快。建议 0.75–1.1。",
+            minimum=0.55,
+            maximum=1.2,
+            step=0.05,
+        ),
     ],
     "ai_art": [
         _field("source_dir", "输入图片目录", "path", required=True, placeholder=r"G:\Job\Photo-Datasets\input"),
@@ -135,6 +152,27 @@ PIPELINE_FIELDS: dict[str, list[dict[str, Any]]] = {
         _field("description", "视频简介", "textarea", rows=3),
         _field("tags", "标签", "tags", placeholder="AI绘画, 作品集"),
         _field("group_size", "每组图片数", "number", default=4, minimum=1, maximum=20),
+    ],
+    "xhs_image_note": [
+        _field("source_dir", "输入图片目录", "path", required=True, placeholder=r"G:\Job\Photo-Datasets\input"),
+        _field("archive_dir", "成功归档目录", "path"),
+        _field("failed_dir", "失败归档目录", "path"),
+        _field("source_files", "指定文件", "tags", help_text="留空时处理目录顶层全部图片。"),
+        _field(
+            "image_prompt",
+            "3:4 改图提示词",
+            "textarea",
+            required=True,
+            placeholder="请将图片处理为适合小红书图文的 3:4 竖图。",
+            rows=5,
+        ),
+        _field("title", "笔记标题", required=True),
+        _field("note", "笔记正文", "textarea", rows=4),
+        _field("tags", "标签", "tags", placeholder="AI绘画, 小红书图文"),
+        _field("schedule", "定时发布时间", placeholder="可选，由 SAU 解析"),
+        _field("debug", "SAU 调试模式", "checkbox", default=False),
+        _field("headed", "显示浏览器", "checkbox", default=False),
+        _field("dry_run", "安全干运行", "checkbox", default=True),
     ],
     "grouped_anime": [
         _field("source_dir", "输入图片目录", "path", required=True, placeholder=r"G:\Job\Photo-Datasets\input"),
@@ -171,12 +209,23 @@ PIPELINE_FIELDS: dict[str, list[dict[str, Any]]] = {
         _field("kuaishou_account", "快手账号", default="破壁人"),
         _field("dry_run", "安全干运行", "checkbox", default=True),
         _field("force_regenerate", "强制重新生成", "checkbox", default=False),
+        _field(
+            "voice_rate",
+            "朗读速度",
+            "number",
+            placeholder="留空自动；1.0 为正常",
+            help_text="越小越慢，越大越快。建议 0.75–1.1。",
+            minimum=0.55,
+            maximum=1.2,
+            step=0.05,
+        ),
     ],
 }
 
 
-def build_ui_pipelines() -> list[dict[str, Any]]:
+def build_ui_pipelines(settings: Any | None = None) -> list[dict[str, Any]]:
     metadata = {item.content_type: item for item in list_pipelines()}
+    default_params = _ui_pipeline_defaults(settings)
     result = []
     for content_type in PIPELINE_FIELDS:
         meta = metadata.get(content_type)
@@ -191,10 +240,37 @@ def build_ui_pipelines() -> list[dict[str, Any]]:
                 "required_params": meta.required_params,
                 "external_tools": meta.external_tools,
                 "publish_targets": meta.publish_targets,
-                "fields": PIPELINE_FIELDS[content_type],
+                "fields": _fields_with_defaults(PIPELINE_FIELDS[content_type], default_params.get(content_type, {})),
             }
         )
     return result
+
+
+def _ui_pipeline_defaults(settings: Any | None) -> dict[str, dict[str, Any]]:
+    if settings is None:
+        return {}
+    payload = load_pipeline_defaults(settings.pipeline_defaults_file)
+    if not payload.get("enabled"):
+        return {}
+    pipelines = payload.get("pipelines") or {}
+    if not isinstance(pipelines, dict):
+        return {}
+    defaults: dict[str, dict[str, Any]] = {}
+    for content_type, pipeline_config in pipelines.items():
+        if not isinstance(pipeline_config, dict):
+            continue
+        params = pipeline_config.get("params") or {}
+        if isinstance(params, dict):
+            defaults[str(content_type)] = params
+    return defaults
+
+
+def _fields_with_defaults(fields: list[dict[str, Any]], defaults: dict[str, Any]) -> list[dict[str, Any]]:
+    if not defaults:
+        return [field.copy() for field in fields]
+    return [
+        field | {"default": defaults[field["name"]]} if field["name"] in defaults else field.copy() for field in fields
+    ]
 
 
 def validate_task_for_ui(task: TaskInput) -> tuple[TaskInput, list[str]]:

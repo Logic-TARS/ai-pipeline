@@ -393,6 +393,7 @@ def run_ai_briefing_pipeline(ctx: PipelineContext) -> None:
             dry_run=params.dry_run,
             force_regenerate=params.force_regenerate,
             input_hashes=input_hashes,
+            voice_rate=params.voice_rate,
         )
         validate_spoken_subtitle(result.subtitle)
         artifacts.video = result.video

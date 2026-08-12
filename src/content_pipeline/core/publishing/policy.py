@@ -53,7 +53,16 @@ TENCENT = PlatformPolicy(
     fail_closed_rule="If draft status is not confirmed, the target reports PUBLISH_FAILED.",
 )
 
-PLATFORM_POLICIES: dict[str, PlatformPolicy] = {p.platform: p for p in [DOUYIN, KUAISHOU, BILIBILI, TENCENT]}
+XIAOHONGSHU = PlatformPolicy(
+    platform="xiaohongshu",
+    visibility_requirement="Public image note publish with explicit success proof",
+    proof_required="SAU stdout or stderr must contain 图文发布成功 or 发布成功",
+    fail_closed_rule="If publication success is not confirmed, the target reports PUBLISH_FAILED.",
+)
+
+PLATFORM_POLICIES: dict[str, PlatformPolicy] = {
+    p.platform: p for p in [DOUYIN, KUAISHOU, BILIBILI, TENCENT, XIAOHONGSHU]
+}
 
 
 def get_policy(platform: str) -> PlatformPolicy:

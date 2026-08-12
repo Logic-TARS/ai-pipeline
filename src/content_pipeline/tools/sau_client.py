@@ -31,12 +31,12 @@ def _already_published_result(error: ExternalToolError) -> dict[str, Any] | None
     if "此内容已在" not in text or "小时内发布过" not in text:
         return None
     return {
-        "success": True,
+        "success": False,
         "skipped": True,
-        "reason": "already_published",
-        "visibility": "private",
-        "private_visibility_proof": "enforced_by_uploader_before_recorded_success",
-        "publication_proof": "publish_history_dedup",
+        "reason": "already_published_unverified",
+        "visibility": "unknown",
+        "error": "上传工具命中本地发布历史去重，但平台未返回本次发布成功凭证。请检查平台后台，或绕过去重后重试。",
+        "publication_proof": None,
     }
 
 
@@ -48,6 +48,68 @@ def _tencent_short_title(title: str) -> str:
         normalized,
     )
     return re.sub(r"\s+", " ", normalized).strip()[:16] or "视频草稿"
+
+
+def call_sau_xiaohongshu_note(
+    *,
+    images: list[Path],
+    title: str,
+    note: str = "",
+    tags: list[str] | None = None,
+    account: str,
+    settings: Settings,
+    schedule: str | None = None,
+    debug: bool = False,
+    headed: bool = False,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    if not images:
+        raise ConfigError("xiaohongshu image note upload requires at least one image")
+    command = [
+        str(settings.sau_exe),
+        "xiaohongshu",
+        "upload-note",
+        "--account",
+        account,
+        "--images",
+        *[str(image.resolve()) for image in images],
+        "--title",
+        title,
+    ]
+    if note:
+        command.extend(["--note", note])
+    if tags:
+        command.extend(["--tags", ",".join(tags)])
+    if schedule:
+        command.extend(["--schedule", schedule])
+    if debug:
+        command.append("--debug")
+    command.append("--headed" if headed else "--headless")
+
+    if dry_run:
+        return {
+            "success": True,
+            "dry_run": True,
+            "command": command,
+            "visibility": "public",
+            "publication_proof": "skipped_in_dry_run",
+        }
+
+    _enforce_publish_policy("xiaohongshu", settings)
+    result = run_command(command, cwd=settings.sau_dir, timeout=1800, retries=0)
+    output = "\n".join((result.stdout, result.stderr))
+    proof = "图文发布成功" if "图文发布成功" in output else "发布成功" if "发布成功" in output else None
+    if proof is None:
+        raise PrivateVisibilityUnsupportedError(
+            "Xiaohongshu note upload did not provide proof of successful publication."
+        )
+    return {
+        "success": True,
+        "stdout": result.stdout.strip(),
+        "stderr": result.stderr.strip(),
+        "visibility": "public",
+        "publication_proof": proof,
+    }
 
 
 def call_sau_target(

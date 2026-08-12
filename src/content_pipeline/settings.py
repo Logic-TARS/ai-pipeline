@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     web_admin_token: SecretStr = SecretStr("")
     web_api_token: SecretStr = SecretStr("")
     web_session_secret: SecretStr = SecretStr("")
-    web_session_ttl_seconds: int = Field(default=28800, ge=300, le=86400)
+    web_session_ttl_seconds: int = Field(default=604800, ge=300, le=604800)
     web_publish_enabled: bool = False
     web_publish_reauth_seconds: int = Field(default=300, ge=60, le=3600)
     web_tls_certfile: Path | None = None

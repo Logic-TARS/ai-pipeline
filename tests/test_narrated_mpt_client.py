@@ -92,7 +92,90 @@ def test_invalid_exact_task_is_archived_instead_of_reused(tmp_path: Path, monkey
     assert list((mpt_dir / "storage" / "tasks").glob("finance-20260721.stale-*"))
 
 
+def test_narrated_mpt_reports_safe_milestones_from_streamed_output(tmp_path: Path, monkeypatch) -> None:
+    mpt_dir = tmp_path / "mpt"
+    task_name = "content-progress"
+    task_dir = mpt_dir / "storage" / "tasks" / task_name
+    updates: list[tuple[int, str, str, bool]] = []
+
+    def fake_run(command, **kwargs):
+        callback = kwargs["on_output"]
+        assert callback is not None
+        callback("stdout", "starting tts generation\n")
+        callback("stderr", "downloading pexels material\n")
+        callback("stdout", "render video\n")
+        task_dir.mkdir(parents=True, exist_ok=True)
+        (task_dir / "final-1.mp4").write_bytes(b"new-video")
+        (task_dir / "subtitle.srt").write_text(
+            "1\n00:00:00,000 --> 00:00:05,000\n这是一段足够长并且有效的口播字幕内容。\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("content_pipeline.tools.narrated_mpt_client.run_command", fake_run)
+    call_narrated_mpt(
+        task_name=task_name,
+        title="今日资讯",
+        script="市场信息。" * 80,
+        output_dir=tmp_path / "output",
+        settings=Settings(mpt_dir=mpt_dir, mpt_python=Path("python")),
+        on_progress=lambda percent, phase, message, estimate: updates.append((percent, phase, message, estimate)),
+    )
+
+    assert (15, "初始化 MoneyPrinterTurbo", "MoneyPrinterTurbo 已启动，正在准备视频任务", False) in updates
+    assert (30, "生成配音与字幕", "MoneyPrinterTurbo 正在生成配音或字幕", True) in updates
+    assert (45, "获取视频素材", "MoneyPrinterTurbo 正在获取视频素材", True) in updates
+    assert (65, "渲染视频", "MoneyPrinterTurbo 正在合成视频", True) in updates
+    assert (85, "复制视频产物", "视频、字幕和生成清单已写入任务目录", False) in updates
+
+
 def test_briefing_voice_rate_targets_ninety_seconds() -> None:
     assert _briefing_voice_rate("x" * 482) == 0.82
     assert 0.55 <= _briefing_voice_rate("x" * 350) <= 1.0
     assert 0.55 <= _briefing_voice_rate("x" * 500) <= 1.0
+
+
+def test_voice_rate_is_part_of_reuse_identity(tmp_path: Path, monkeypatch) -> None:
+    mpt_dir = tmp_path / "mpt"
+    output_dir = tmp_path / "output"
+    task_name = "content-voice-rate"
+    script = "市场信息。" * 80
+
+    call_narrated_mpt(
+        task_name=task_name,
+        title="今日资讯",
+        script=script,
+        output_dir=output_dir,
+        settings=Settings(mpt_dir=mpt_dir, mpt_python=Path("python")),
+        dry_run=True,
+        voice_rate=0.8,
+    )
+    first_manifest = json.loads((output_dir / "generation_manifest.json").read_text(encoding="utf-8"))
+    assert first_manifest["voice_rate"] == 0.8
+
+    task_dir = mpt_dir / "storage" / "tasks" / task_name
+    captured: list[str] = []
+
+    def fake_run(command, **kwargs):
+        captured.extend(command)
+        task_dir.mkdir(parents=True, exist_ok=True)
+        (task_dir / "final-1.mp4").write_bytes(b"new-video")
+        (task_dir / "subtitle.srt").write_text(
+            "1\n00:00:00,000 --> 00:00:05,000\n这是一段足够长并且有效的口播字幕内容。\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("content_pipeline.tools.narrated_mpt_client.run_command", fake_run)
+    call_narrated_mpt(
+        task_name=task_name,
+        title="今日资讯",
+        script=script,
+        output_dir=output_dir,
+        settings=Settings(mpt_dir=mpt_dir, mpt_python=Path("python")),
+        voice_rate=1.1,
+    )
+
+    assert captured[captured.index("--voice-rate") + 1] == "1.1"
+    updated_manifest = json.loads((output_dir / "generation_manifest.json").read_text(encoding="utf-8"))
+    assert updated_manifest["voice_rate"] == 1.1

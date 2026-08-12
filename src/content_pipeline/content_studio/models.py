@@ -86,3 +86,4 @@ class DraftRevisionInput(BaseModel):
 
 class GenerateVideoInput(DraftRevisionInput):
     dry_run: bool = False
+    voice_rate: float | None = Field(default=None, ge=0.55, le=1.2)

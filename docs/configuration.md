@@ -58,7 +58,7 @@ Remote access requires the exact ZeroTier interface IP and all of the following:
 - independent `WEB_ADMIN_TOKEN`, `WEB_API_TOKEN`, and `WEB_SESSION_SECRET` values of at least 32 characters.
 - both `WEB_TLS_CERTFILE` and `WEB_TLS_KEYFILE`, unless the explicit restricted-mode `WEB_ALLOW_ZEROTIER_HTTP=true` exception is accepted.
 
-`WEB_SESSION_TTL_SECONDS` controls session lifetime, and `WEB_PUBLISH_REAUTH_SECONDS` controls how recently a session must have logged in before a publish request. `WEB_PUBLISH_ENABLED` defaults to false and is an additional API-level guard; it does not override pipeline privacy checks.
+`WEB_SESSION_TTL_SECONDS` controls session lifetime (604800 seconds, or 7 days, by default). `WEB_PUBLISH_REAUTH_SECONDS` independently controls how recently a session must have logged in before a publish request (300 seconds, or 5 minutes, by default). `WEB_PUBLISH_ENABLED` defaults to false and is an additional API-level guard; it does not override pipeline privacy checks.
 
 `ai-popline serve` rejects wildcard listeners, remote addresses outside the configured CIDRs, missing authentication, partial TLS configuration, and bind addresses that are not assigned to a local interface. See the [ZeroTier Web Access Runbook](zerotier-web-access.md) before enabling remote access.
 

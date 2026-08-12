@@ -6,7 +6,7 @@ from content_pipeline.errors import ExternalToolError, PrivateVisibilityUnsuppor
 from content_pipeline.models import PublishTarget
 from content_pipeline.profiles import UploadProfile
 from content_pipeline.settings import Settings
-from content_pipeline.tools.sau_client import call_sau_target, call_sau_upload
+from content_pipeline.tools.sau_client import call_sau_target, call_sau_upload, call_sau_xiaohongshu_note
 
 
 def test_douyin_target_dry_run_is_private(tmp_path: Path) -> None:
@@ -65,7 +65,7 @@ def test_kuaishou_requires_private_and_success_proof(tmp_path: Path, monkeypatch
         )
 
 
-def test_publish_history_duplicate_is_idempotent_success(tmp_path: Path, monkeypatch) -> None:
+def test_publish_history_duplicate_is_unverified_failure(tmp_path: Path, monkeypatch) -> None:
     video = tmp_path / "demo.mp4"
     video.write_bytes(b"x")
 
@@ -81,9 +81,12 @@ def test_publish_history_duplicate_is_idempotent_success(tmp_path: Path, monkeyp
         tags=["基金"],
         settings=Settings(),
     )
-    assert result["success"] is True
-    assert result["reason"] == "already_published"
-    assert result["publication_proof"] == "publish_history_dedup"
+    assert result["success"] is False
+    assert result["skipped"] is True
+    assert result["reason"] == "already_published_unverified"
+    assert result["visibility"] == "unknown"
+    assert result["publication_proof"] is None
+    assert "平台未返回本次发布成功凭证" in result["error"]
 
 
 def test_bilibili_target_requires_tid() -> None:
@@ -231,3 +234,73 @@ def test_real_bilibili_upload_passes_verified_private_flag(tmp_path: Path, monke
     assert captured_command[-2:] == ["--is-only-self", "1"]
     assert result["visibility"] == "private"
     assert result["private_visibility_proof"] == "biliup --is-only-self 1"
+
+
+def test_xiaohongshu_note_dry_run_builds_upload_note_command(tmp_path: Path) -> None:
+    image1 = tmp_path / "1.png"
+    image2 = tmp_path / "2.png"
+    image1.write_bytes(b"x")
+    image2.write_bytes(b"x")
+
+    result = call_sau_xiaohongshu_note(
+        images=[image1, image2],
+        title="小红书标题",
+        note="正文",
+        tags=["AI绘画", "小红书图文"],
+        account="小红书账号",
+        settings=Settings(),
+        dry_run=True,
+    )
+
+    command = result["command"]
+    assert command[:3] == [str(Settings().sau_exe), "xiaohongshu", "upload-note"]
+    assert command[command.index("--account") + 1] == "小红书账号"
+    image_args = command[command.index("--images") + 1 : command.index("--title")]
+    assert [Path(value).name for value in image_args] == ["1.png", "2.png"]
+    assert all(Path(value).is_absolute() for value in image_args)
+    assert command[command.index("--title") + 1] == "小红书标题"
+    assert command[command.index("--note") + 1] == "正文"
+    assert command[command.index("--tags") + 1] == "AI绘画,小红书图文"
+    assert "--headless" in command
+    assert result["visibility"] == "public"
+
+
+def test_xiaohongshu_note_requires_success_proof(tmp_path: Path, monkeypatch) -> None:
+    image = tmp_path / "1.png"
+    image.write_bytes(b"x")
+
+    def fake_run_command(command, **kwargs):
+        import subprocess
+
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="上传完成", stderr="")
+
+    monkeypatch.setattr("content_pipeline.tools.sau_client.run_command", fake_run_command)
+    with pytest.raises(PrivateVisibilityUnsupportedError, match="Xiaohongshu"):
+        call_sau_xiaohongshu_note(
+            images=[image],
+            title="小红书标题",
+            account="小红书账号",
+            settings=Settings(),
+        )
+
+
+def test_xiaohongshu_note_accepts_success_proof(tmp_path: Path, monkeypatch) -> None:
+    image = tmp_path / "1.png"
+    image.write_bytes(b"x")
+
+    def fake_run_command(command, **kwargs):
+        import subprocess
+
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="图文发布成功", stderr="")
+
+    monkeypatch.setattr("content_pipeline.tools.sau_client.run_command", fake_run_command)
+    result = call_sau_xiaohongshu_note(
+        images=[image],
+        title="小红书标题",
+        account="小红书账号",
+        settings=Settings(),
+    )
+
+    assert result["success"] is True
+    assert result["visibility"] == "public"
+    assert result["publication_proof"] == "图文发布成功"

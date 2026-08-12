@@ -1,26 +1,47 @@
 from __future__ import annotations
 
 import json
+import re
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from .models import ArtifactSet, JobSnapshot, JobStatus, PipelineStep, RouteResult, TaskInput
+from .models import (
+    ArtifactSet,
+    JobProgress,
+    JobSnapshot,
+    JobStatus,
+    PipelineStep,
+    PublicationAttempt,
+    RouteResult,
+    TaskInput,
+)
 
 STORE_VERSION = 1
 """Schema version written into every status.json. Increment on breaking changes."""
+
+
+class JobDeleteConflictError(RuntimeError):
+    pass
 
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _safe_progress_text(value: str) -> str:
+    """Prevent progress events from becoming a channel for local path disclosure."""
+    return re.sub(r"(?:[A-Za-z]:[\\/][^\s\"']+|/(?:[^\s\"']+/)+[^\s\"']+)", "[已隐藏路径]", value)
+
+
 class JobStore:
     def __init__(self, data_dir: Path):
         self.jobs_dir = data_dir / "jobs"
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
 
     # ------------------------------------------------------------------
     # CRUD
@@ -58,14 +79,15 @@ class JobStore:
         return JobSnapshot.model_validate_json(raw)
 
     def save(self, snapshot: JobSnapshot) -> None:
-        path = self.status_path(snapshot.task_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        snapshot.store_version = STORE_VERSION
-        snapshot.updated_at = utc_now()
-        data = snapshot.model_dump(mode="json")
-        tmp_path = path.with_name(f"{path.name}.tmp")
-        tmp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-        tmp_path.replace(path)
+        with self._lock:
+            path = self.status_path(snapshot.task_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            snapshot.store_version = STORE_VERSION
+            snapshot.updated_at = utc_now()
+            data = snapshot.model_dump(mode="json")
+            tmp_path = path.with_name(f"{path.name}.tmp")
+            tmp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            tmp_path.replace(path)
 
     # ------------------------------------------------------------------
     # Events
@@ -77,7 +99,7 @@ class JobStore:
             "event": event,
             "payload": payload or {},
         }
-        with self.events_path(task_id).open("a", encoding="utf-8") as fh:
+        with self._lock, self.events_path(task_id).open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     # ------------------------------------------------------------------
@@ -106,6 +128,30 @@ class JobStore:
         snapshot.artifacts = artifacts
         self.save(snapshot)
 
+    def set_progress(
+        self,
+        task_id: str,
+        *,
+        percent: int,
+        phase: str,
+        message: str,
+        is_estimate: bool = False,
+    ) -> JobSnapshot:
+        """Persist a user-facing progress update without exposing tool output or paths."""
+        snapshot = self.get(task_id)
+        previous = snapshot.progress.percent if snapshot.progress else 0
+        progress = JobProgress(
+            percent=max(previous, percent),
+            phase=_safe_progress_text(phase),
+            message=_safe_progress_text(message),
+            updated_at=utc_now(),
+            is_estimate=is_estimate,
+        )
+        snapshot.progress = progress
+        self.save(snapshot)
+        self.event(task_id, "progress_updated", progress.model_dump(mode="json"))
+        return snapshot
+
     def finish(self, task_id: str, status: JobStatus, error: str | None = None) -> None:
         snapshot = self.get(task_id)
         snapshot.status = status
@@ -116,6 +162,85 @@ class JobStore:
         snapshot.finished_at = utc_now()
         self.save(snapshot)
         self.event(task_id, "job_finished", {"status": status.value, "error": error})
+
+    # ------------------------------------------------------------------
+    # Deferred publication helpers
+    # ------------------------------------------------------------------
+
+    def add_publication_attempt(self, task_id: str, attempt: PublicationAttempt) -> JobSnapshot:
+        with self._lock:
+            snapshot = self.get(task_id)
+            if any(item.status in {"queued", "running"} for item in snapshot.publication_attempts):
+                raise ValueError("a publication attempt is already active")
+            snapshot.publication_attempts.append(attempt)
+            self.save(snapshot)
+            self.event(
+                task_id,
+                "publish_requested",
+                {"attempt_id": attempt.attempt_id, "platforms": [t.platform for t in attempt.request.publish_targets]},
+            )
+            return snapshot
+
+    def mark_publication_started(self, task_id: str, attempt_id: str) -> PublicationAttempt:
+        with self._lock:
+            snapshot, attempt = self._publication_attempt(task_id, attempt_id)
+            attempt.status = "running"
+            attempt.started_at = utc_now()
+            attempt.error = None
+            self.save(snapshot)
+            self.event(task_id, "publish_started", {"attempt_id": attempt_id})
+            return attempt
+
+    def set_publication_target_result(
+        self,
+        task_id: str,
+        attempt_id: str,
+        platform: str,
+        result: dict[str, Any],
+    ) -> PublicationAttempt:
+        with self._lock:
+            snapshot, attempt = self._publication_attempt(task_id, attempt_id)
+            attempt.results[platform] = result
+            self.save(snapshot)
+            self.event(
+                task_id,
+                "publish_target_finished",
+                {
+                    "attempt_id": attempt_id,
+                    "platform": platform,
+                    "success": bool(result.get("success")),
+                },
+            )
+            return attempt
+
+    def finish_publication_attempt(
+        self,
+        task_id: str,
+        attempt_id: str,
+        status: str,
+        error: str | None = None,
+    ) -> PublicationAttempt:
+        if status not in {"succeeded", "partial", "failed"}:
+            raise ValueError(f"invalid terminal publication status: {status}")
+        with self._lock:
+            snapshot, attempt = self._publication_attempt(task_id, attempt_id)
+            attempt.status = status  # type: ignore[assignment]
+            attempt.error = error
+            attempt.finished_at = utc_now()
+            self.save(snapshot)
+            self.event(
+                task_id,
+                "publish_finished",
+                {"attempt_id": attempt_id, "status": status, "error": _safe_progress_text(error or "") or None},
+            )
+            return attempt
+
+    def _publication_attempt(self, task_id: str, attempt_id: str) -> tuple[JobSnapshot, PublicationAttempt]:
+        snapshot = self.get(task_id)
+        attempt = next((item for item in snapshot.publication_attempts if item.attempt_id == attempt_id), None)
+        if attempt is None:
+            raise FileNotFoundError(f"publication attempt not found: {attempt_id}")
+        return snapshot, attempt
 
     # ------------------------------------------------------------------
     # Listing & cleanup
@@ -152,6 +277,50 @@ class JobStore:
             if len(jobs) >= limit:
                 break
         return jobs
+
+    def rename_job(self, task_id: str, display_name: str) -> JobSnapshot:
+        normalized = display_name.strip()
+        if not normalized or len(normalized) > 120:
+            raise ValueError("display_name must contain 1-120 characters")
+        if not re.fullmatch(r"[0-9a-f]{32}", task_id):
+            raise FileNotFoundError(f"job not found: {task_id}")
+        with self._lock:
+            try:
+                snapshot = self.get(task_id)
+            except FileNotFoundError as exc:
+                raise FileNotFoundError(f"job not found: {task_id}") from exc
+            snapshot.display_name = normalized
+            self.save(snapshot)
+            self.event(task_id, "job_metadata_updated", {"display_name": normalized})
+            return snapshot
+
+    def delete_job(self, task_id: str) -> None:
+        if not re.fullmatch(r"[0-9a-f]{32}", task_id):
+            raise FileNotFoundError(f"job not found: {task_id}")
+        with self._lock:
+            try:
+                snapshot = self.get(task_id)
+            except FileNotFoundError as exc:
+                raise FileNotFoundError(f"job not found: {task_id}") from exc
+            if snapshot.status in {JobStatus.QUEUED, JobStatus.RUNNING}:
+                raise JobDeleteConflictError("queued or running jobs cannot be deleted")
+            if any(item.status in {"queued", "running"} for item in snapshot.publication_attempts):
+                raise JobDeleteConflictError("jobs with an active publication cannot be deleted")
+            _rmtree(self.job_dir(task_id))
+
+    def delete_jobs(self, task_ids: list[str]) -> dict[str, list[str]]:
+        result = {"deleted": [], "not_found": [], "blocked": [], "failed": []}
+        for task_id in dict.fromkeys(task_ids):
+            try:
+                self.delete_job(task_id)
+                result["deleted"].append(task_id)
+            except JobDeleteConflictError:
+                result["blocked"].append(task_id)
+            except FileNotFoundError:
+                result["not_found"].append(task_id)
+            except OSError:
+                result["failed"].append(task_id)
+        return result
 
     def cleanup_old_jobs(self, max_age_days: int = 30) -> int:
         """Delete jobs older than *max_age_days*. Returns count of removed jobs."""

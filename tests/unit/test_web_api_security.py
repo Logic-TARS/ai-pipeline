@@ -2,10 +2,13 @@ import importlib
 import time
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from content_pipeline.api.app import create_app, task_fingerprint
-from content_pipeline.models import TaskInput
+from content_pipeline.api.security import WebSecurity
+from content_pipeline.models import JobStatus, TaskInput
 from content_pipeline.settings import Settings
 
 security_module = importlib.import_module("content_pipeline.api.security")
@@ -91,6 +94,37 @@ def test_login_session_requires_csrf_for_writes(tmp_path: Path) -> None:
     assert missing_csrf.status_code == 403
     assert missing_csrf.json()["error"]["code"] == "csrf_failed"
     assert logout.status_code == 200
+
+
+def test_session_defaults_to_seven_days_and_rejects_longer_values(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+
+    assert settings.web_session_ttl_seconds == 604800
+    with pytest.raises(ValidationError):
+        _settings(tmp_path, web_session_ttl_seconds=604801)
+
+
+def test_session_expiry_and_cookie_max_age_use_configured_ttl(tmp_path: Path, monkeypatch) -> None:
+    issued_at = 1_800_000_000
+    monkeypatch.setattr(security_module.time, "time", lambda: issued_at)
+    security = WebSecurity(_settings(tmp_path))
+    cookie, session = security.new_session()
+
+    assert session.expires_at - session.issued_at == 604800
+    assert security.decode_session(cookie) == session
+
+    app = create_app(_settings(tmp_path))
+    with TestClient(app, base_url="http://testserver", client=("127.0.0.1", 50000)) as client:
+        login = client.post("/auth/login", json={"token": ADMIN_TOKEN})
+
+    set_cookies = login.headers.get_list("set-cookie")
+    assert len(set_cookies) == 2
+    assert all("Max-Age=604800" in value for value in set_cookies)
+
+    monkeypatch.setattr(security_module.time, "time", lambda: session.expires_at - 1)
+    assert security.decode_session(cookie) == session
+    monkeypatch.setattr(security_module.time, "time", lambda: session.expires_at)
+    assert security.decode_session(cookie) is None
 
 
 def test_bearer_authentication_and_origin_validation(tmp_path: Path) -> None:
@@ -233,7 +267,10 @@ def test_session_publish_requires_recent_login(tmp_path: Path, monkeypatch) -> N
         )
 
     assert response.status_code == 401
-    assert response.json()["detail"] == "recent authentication required for publishing"
+    assert response.json()["detail"] == {
+        "code": "recent_authentication_required",
+        "message": "recent authentication required for publishing",
+    }
 
 
 def test_artifact_endpoint_serves_only_registered_files_inside_job(tmp_path: Path) -> None:
@@ -259,3 +296,26 @@ def test_artifact_endpoint_serves_only_registered_files_inside_job(tmp_path: Pat
     assert artifacts[0]["relative_path"] == "video/preview.mp4"
     assert downloaded.content == b"video-bytes"
     assert invalid_id.status_code in {404, 422}
+
+
+def test_session_crud_writes_require_and_accept_csrf(tmp_path: Path) -> None:
+    app = create_app(_settings(tmp_path))
+    snapshot = app.state.orchestrator.store.create(TaskInput(description="CSRF CRUD 测试"))
+    app.state.orchestrator.store.finish(snapshot.task_id, status=JobStatus.FAILED, error="test terminal status")
+
+    with TestClient(app, base_url="http://testserver", client=("127.0.0.1", 50000)) as client:
+        login = client.post("/auth/login", json={"token": ADMIN_TOKEN})
+        csrf = login.json()["csrf_token"]
+        missing = client.patch(f"/jobs/{snapshot.task_id}", json={"display_name": "新名称"})
+        renamed = client.patch(
+            f"/jobs/{snapshot.task_id}",
+            headers={"X-CSRF-Token": csrf},
+            json={"display_name": "新名称"},
+        )
+        deleted = client.delete(f"/jobs/{snapshot.task_id}", headers={"X-CSRF-Token": csrf})
+
+    assert missing.status_code == 403
+    assert missing.json()["error"]["code"] == "csrf_failed"
+    assert renamed.status_code == 200
+    assert renamed.json()["display_name"] == "新名称"
+    assert deleted.status_code == 200

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import secrets
 from concurrent.futures import ThreadPoolExecutor
@@ -8,12 +7,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path as FilePath
 from typing import Any
 from urllib.parse import quote
+from uuid import uuid4
 
 from fastapi import FastAPI, Header, HTTPException, Path, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from content_pipeline.api.artifacts import registered_artifacts
 from content_pipeline.api.content import build_content_router
@@ -25,7 +25,23 @@ from content_pipeline.api.ui_schema import (
     validate_task_for_ui,
 )
 from content_pipeline.content_studio import ContentStudioService
-from content_pipeline.models import JobStatus, PipelineStep, TaskInput
+from content_pipeline.deferred_publishing import (
+    PublicationEligibilityError,
+    publication_readiness,
+    publication_summary,
+    run_deferred_publication,
+    validate_deferred_publish_request,
+)
+from content_pipeline.job_store import JobDeleteConflictError, utc_now
+from content_pipeline.models import (
+    DeferredPublishInput,
+    JobStatus,
+    PipelineStep,
+    PublicationAttempt,
+    TaskInput,
+    deferred_publish_fingerprint,
+    task_fingerprint,
+)
 from content_pipeline.orchestrator import Orchestrator
 from content_pipeline.pipelines.registry import list_pipelines
 from content_pipeline.settings import Settings, load_settings
@@ -37,9 +53,29 @@ class LoginInput(BaseModel):
     token: str
 
 
-def task_fingerprint(task: TaskInput) -> str:
-    payload = json.dumps(task.model_dump(mode="json"), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+class DeleteJobsInput(BaseModel):
+    task_ids: list[str] = Field(min_length=1, max_length=100)
+
+    @field_validator("task_ids")
+    @classmethod
+    def validate_task_ids(cls, values: list[str]) -> list[str]:
+        if any(len(value) != 32 or any(character not in "0123456789abcdef" for character in value) for value in values):
+            raise ValueError("task_ids must contain 32-character lowercase hexadecimal ids")
+        return list(dict.fromkeys(values))
+
+
+class RenameJobInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str = Field(min_length=1, max_length=120)
+
+    @field_validator("display_name")
+    @classmethod
+    def normalize_display_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("display_name cannot be blank")
+        return normalized
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -69,7 +105,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.executor = executor
     app.state.security = security
     app.state.content_studio = content_studio
-    app.include_router(build_content_router(content_studio, orchestrator, executor))
+    app.include_router(build_content_router(content_studio, orchestrator, executor, resolved_settings))
     app.mount("/static", StaticFiles(directory=WEB_STATIC_DIR), name="static")
 
     @app.exception_handler(RequestValidationError)
@@ -140,13 +176,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def ui_bootstrap() -> dict[str, Any]:
         return {
             "app_name": "AI Popline",
+            "api_contract_version": 2,
+            "features": {
+                "content_draft_crud": True,
+                "content_draft_bulk_delete": True,
+                "job_rename": True,
+                "job_delete": True,
+                "job_bulk_delete": True,
+            },
             "auth_required": resolved_settings.web_auth_required,
             "publish_enabled": resolved_settings.web_publish_enabled,
             "active_refresh_ms": 2500,
             "idle_refresh_ms": 15000,
             "statuses": [status.value for status in JobStatus],
             "steps": [step.value for step in PipelineStep],
-            "pipelines": build_ui_pipelines(),
+            "pipelines": build_ui_pipelines(resolved_settings),
         }
 
     @app.post("/validate-task", tags=["jobs"])
@@ -193,7 +237,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     },
                 )
             if not security.session_is_recent(request):
-                raise HTTPException(status_code=401, detail="recent authentication required for publishing")
+                raise HTTPException(
+                    status_code=401,
+                    detail={
+                        "code": "recent_authentication_required",
+                        "message": "recent authentication required for publishing",
+                    },
+                )
         task_id = orchestrator.submit(task)
         executor.submit(orchestrator.run, task_id)
         return {"task_id": task_id, "status": "queued"}
@@ -201,14 +251,127 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/status/{task_id}", tags=["jobs"])
     def get_status(task_id: str = Path(pattern=r"^[0-9a-f]{32}$")) -> dict[str, Any]:
         try:
-            return orchestrator.store.get(task_id).model_dump(mode="json")
+            snapshot = orchestrator.store.get(task_id)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="task not found") from exc
+        return snapshot.model_dump(mode="json") | {"publication_summary": publication_summary(snapshot)}
 
     @app.get("/jobs", tags=["jobs"])
     def list_jobs(status: JobStatus | None = None, content_type: str | None = None, limit: int = 50) -> dict[str, Any]:
         jobs = orchestrator.store.list_jobs(status=status, content_type=content_type, limit=max(1, min(limit, 200)))
-        return {"jobs": [job.model_dump(mode="json") for job in jobs]}
+        return {
+            "jobs": [job.model_dump(mode="json") | {"publication_summary": publication_summary(job)} for job in jobs]
+        }
+
+    def delete_jobs_result(request: DeleteJobsInput) -> dict[str, list[str]]:
+        return orchestrator.store.delete_jobs(request.task_ids)
+
+    app.add_api_route("/jobs/batch-delete", delete_jobs_result, methods=["POST"], tags=["jobs"])
+    app.add_api_route("/jobs/delete", delete_jobs_result, methods=["POST"], tags=["jobs"], include_in_schema=False)
+
+    @app.get("/jobs/{task_id}", tags=["jobs"])
+    def get_job(task_id: str = Path(pattern=r"^[0-9a-f]{32}$")) -> dict[str, Any]:
+        try:
+            snapshot = orchestrator.store.get(task_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="task not found") from exc
+        return snapshot.model_dump(mode="json") | {"publication_summary": publication_summary(snapshot)}
+
+    @app.patch("/jobs/{task_id}", tags=["jobs"])
+    def rename_job(request: RenameJobInput, task_id: str = Path(pattern=r"^[0-9a-f]{32}$")) -> dict[str, Any]:
+        try:
+            snapshot = orchestrator.store.rename_job(task_id, request.display_name)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="task not found") from exc
+        return snapshot.model_dump(mode="json") | {"publication_summary": publication_summary(snapshot)}
+
+    @app.delete("/jobs/{task_id}", tags=["jobs"])
+    def delete_job(task_id: str = Path(pattern=r"^[0-9a-f]{32}$")) -> dict[str, Any]:
+        try:
+            orchestrator.store.delete_job(task_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="task not found") from exc
+        except JobDeleteConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"task_id": task_id, "deleted": True}
+
+    @app.get("/jobs/{task_id}/publish-readiness", tags=["publishing"])
+    def get_publish_readiness(task_id: str = Path(pattern=r"^[0-9a-f]{32}$")) -> dict[str, Any]:
+        try:
+            snapshot = orchestrator.store.get(task_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="task not found") from exc
+        return {
+            "task_id": task_id,
+            **publication_readiness(
+                snapshot,
+                orchestrator.store,
+                publish_enabled=resolved_settings.web_publish_enabled,
+            ),
+            "publication_summary": publication_summary(snapshot),
+        }
+
+    @app.post("/jobs/{task_id}/publish", tags=["publishing"], status_code=202)
+    def publish_completed_job(
+        publication: DeferredPublishInput,
+        request: Request,
+        task_id: str = Path(pattern=r"^[0-9a-f]{32}$"),
+        publish_confirmation: str | None = Header(default=None, alias="X-AI-Popline-Publish-Confirmation"),
+    ) -> dict[str, str]:
+        if not resolved_settings.web_publish_enabled:
+            raise HTTPException(status_code=403, detail="web publishing is disabled")
+        try:
+            snapshot = orchestrator.store.get(task_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="task not found") from exc
+        try:
+            _video, video_sha256 = validate_deferred_publish_request(
+                snapshot,
+                orchestrator.store,
+                publication,
+                publish_enabled=True,
+            )
+        except PublicationEligibilityError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        fingerprint = deferred_publish_fingerprint(task_id, video_sha256, publication)
+        expected = f"PUBLISH:{fingerprint}"
+        if not publish_confirmation or not secrets.compare_digest(publish_confirmation, expected):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "publish_confirmation_required",
+                    "publication_fingerprint": fingerprint,
+                    "required_confirmation": expected,
+                },
+            )
+        if not security.session_is_recent(request):
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "code": "recent_authentication_required",
+                    "message": "recent authentication required for publishing",
+                },
+            )
+
+        attempt = PublicationAttempt(
+            attempt_id=uuid4().hex,
+            request=publication,
+            video_sha256=video_sha256,
+            requested_at=utc_now(),
+        )
+        try:
+            orchestrator.store.add_publication_attempt(task_id, attempt)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        executor.submit(
+            run_deferred_publication,
+            task_id=task_id,
+            attempt_id=attempt.attempt_id,
+            store=orchestrator.store,
+            settings=resolved_settings,
+        )
+        return {"task_id": task_id, "attempt_id": attempt.attempt_id, "status": "queued"}
 
     @app.get("/jobs/{task_id}/events", tags=["jobs"])
     def get_job_events(task_id: str = Path(pattern=r"^[0-9a-f]{32}$"), limit: int = 50) -> dict[str, Any]:

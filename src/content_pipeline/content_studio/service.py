@@ -97,13 +97,53 @@ class ContentStudioService:
         draft.video_task_ids.append(task_id)
         return self.store.save(draft, expected_revision=revision)
 
+    def delete(self, draft_id: str) -> None:
+        draft = self.store.get(draft_id)
+        active = self._futures.get(draft_id)
+        if draft.status == "collecting" or (active is not None and not active.done()):
+            raise DraftConflictError("content draft collection is active and cannot be deleted")
+        self.store.delete(draft_id)
+        self._futures.pop(draft_id, None)
+
+    def delete_many(self, draft_ids: list[str]) -> dict[str, list[str]]:
+        result = {"deleted": [], "blocked": [], "not_found": [], "failed": []}
+        for draft_id in dict.fromkeys(draft_ids):
+            try:
+                self.delete(draft_id)
+                result["deleted"].append(draft_id)
+            except DraftConflictError:
+                result["blocked"].append(draft_id)
+            except FileNotFoundError:
+                result["not_found"].append(draft_id)
+            except OSError:
+                result["failed"].append(draft_id)
+        return result
+
     def validate_for_video(self, draft: ContentDraft) -> list[str]:
+        script_errors = self._script_validation_errors(draft)
+        script_ready = not script_errors
+        errors: list[str] = []
+        if draft.status == "collecting" and not script_ready:
+            errors.append("最新资料仍在采集中，请完成资料核对后再生成视频")
+        elif not any(source.status == "succeeded" for source in draft.research) and not script_ready:
+            errors.append("没有可供核对的最新资料，不能生成视频")
+        errors.extend(script_errors)
+        if not draft.title.strip():
+            errors.append("视频标题不能为空")
+        return errors
+
+    def prepare_for_video(self, draft_id: str, revision: int) -> ContentDraft:
+        draft = self.store.get(draft_id)
+        if draft.revision != revision:
+            raise DraftConflictError("content draft changed; save the latest version first")
+        if draft.template_id == "finance_90s" and (draft.status != "ready" or self._script_validation_errors(draft)):
+            self.collect_now(draft_id)
+            return self.store.get(draft_id)
+        return draft
+
+    def _script_validation_errors(self, draft: ContentDraft) -> list[str]:
         script = draft.script.strip()
         errors: list[str] = []
-        if draft.status == "collecting":
-            errors.append("最新资料仍在采集中，请完成资料核对后再生成视频")
-        elif not any(source.status == "succeeded" for source in draft.research):
-            errors.append("没有可供核对的最新资料，不能生成视频")
         if len(script) < 350 or len(script) > 500:
             errors.append(f"90 秒口播稿需要 350–500 字，当前为 {len(script)} 字")
         if looks_like_file_reference(script) or re.search(r"(?:[A-Za-z]:[\\/]|/home/).+\.(?:md|txt|json)", script):
@@ -112,8 +152,6 @@ class ContentStudioService:
             errors.append("口播稿仍包含未完成的占位内容")
         if draft.template_id == "finance_90s" and "不构成投资建议" not in script:
             errors.append(f"口播稿必须包含风险提示：{FINANCE_DISCLAIMER}")
-        if not draft.title.strip():
-            errors.append("视频标题不能为空")
         return errors
 
     def collect_now(self, draft_id: str) -> None:
@@ -131,15 +169,7 @@ class ContentStudioService:
         elif draft.template_id == "finance_90s":
             try:
                 results["finance-daily"] = self._collect_finance_daily_source(draft_id)
-            except Exception as exc:
-                results["finance-daily"] = ResearchSource(
-                    source_id="finance-daily",
-                    label="当天基金日报",
-                    skill_id="FINANCE_DAILY_MARKDOWN",
-                    status="failed",
-                    fetched_at=self._now(),
-                    error=str(exc)[:300],
-                )
+            except Exception:
                 finance_fallback_sources = [
                     ResearchSource(source_id=source_id, label=label, skill_id=skill_id)
                     for source_id, label, skill_id, _body in self._source_requests(draft.focus_assets)
@@ -178,13 +208,11 @@ class ContentStudioService:
 
         def finish(current: ContentDraft) -> None:
             if current.template_id == "finance_90s":
-                daily = results["finance-daily"]
-                if daily.status == "succeeded":
+                daily = results.get("finance-daily")
+                if daily and daily.status == "succeeded":
                     current.research = [daily]
                 else:
-                    current.research = [daily] + [
-                        results.get(item.source_id, item) for item in finance_fallback_sources
-                    ]
+                    current.research = [results.get(item.source_id, item) for item in finance_fallback_sources]
             else:
                 current.research = [results.get(item.source_id, item) for item in current.research]
             succeeded = sum(item.status == "succeeded" for item in current.research)

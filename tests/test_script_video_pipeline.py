@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from content_pipeline.job_store import JobStore
@@ -25,7 +26,7 @@ def test_script_video_pipeline_generates_guarded_dry_run_artifacts(tmp_path: Pat
         TaskInput(
             description="内容工作台口播视频",
             content_type="script_video",
-            params={"title": "今日金融资讯", "script": _script(), "dry_run": True},
+            params={"title": "今日金融资讯", "script": _script(), "dry_run": True, "voice_rate": 0.85},
         )
     )
 
@@ -37,6 +38,15 @@ def test_script_video_pipeline_generates_guarded_dry_run_artifacts(tmp_path: Pat
     assert snapshot.artifacts.video is not None and snapshot.artifacts.video.is_file()
     assert snapshot.artifacts.subtitle is not None and snapshot.artifacts.subtitle.is_file()
     assert snapshot.artifacts.upload_result == {"skipped": True, "reason": "publish_not_requested"}
+    assert snapshot.artifacts.manifest_path is not None
+    manifest = json.loads(snapshot.artifacts.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["voice_rate"] == 0.85
+    assert snapshot.progress is not None
+    assert snapshot.progress.percent == 100
+    assert snapshot.progress.phase == "完成"
+    events = orchestrator.store.events_path(task_id).read_text(encoding="utf-8")
+    assert '"event": "progress_updated"' in events
+    assert str(settings.data_dir) not in events
 
 
 def test_script_video_pipeline_rejects_local_file_references(tmp_path: Path) -> None:

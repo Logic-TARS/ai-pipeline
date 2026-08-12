@@ -42,8 +42,8 @@
         <span><strong>AI Popline</strong><small>内容生产控制台</small></span>
       </a>
       <nav class="primary-nav" aria-label="控制台工作区">
-        <button class="nav-button active" type="button" data-console-view="studio">内容工作台</button>
-        <button class="nav-button" type="button" data-console-view="jobs">任务中心</button>
+        <button class="nav-button active" type="button" data-console-view="studio"><span aria-hidden="true">✦</span>内容工作台</button>
+        <button class="nav-button" type="button" data-console-view="jobs"><span aria-hidden="true">◫</span>任务中心</button>
       </nav>
       <div class="topbar-actions">
         <button class="button ghost compact theme-toggle" type="button" aria-label="切换到浅色模式" title="切换到浅色模式">
@@ -60,11 +60,13 @@
     <main id="main-content" class="page-shell">
       <section id="studio-view" class="console-view" aria-labelledby="studio-title">
         <section class="hero studio-hero">
-          <div>
+          <div class="hero-copy-wrap">
             <p class="eyebrow">CONTENT STUDIO</p>
-            <h1 id="studio-title">内容工作台</h1>
-            <p class="hero-copy">选择内容类型，获取只读资料，核对口播稿后交给视频流水线。</p>
+            <h1 id="studio-title">让内容从灵感到成片</h1>
+            <p class="hero-copy">选择内容类型，汇集可信资料，核对口播稿后交给自动化视频流水线。</p>
+            <div class="hero-tags" aria-label="工作台能力"><span>只读资料</span><span>人工审核</span><span>本地生成</span></div>
           </div>
+          <div class="hero-orbit" aria-hidden="true"><span>资料</span><i>→</i><span>口播</span><i>→</i><span>视频</span></div>
         </section>
 
         <section id="studio-status" class="readiness-strip" aria-live="polite">
@@ -86,7 +88,7 @@
 
         <section class="studio-layout">
           <aside class="panel draft-library" aria-labelledby="draft-library-title">
-            <header class="panel-header"><div><p class="eyebrow">DRAFTS</p><h2 id="draft-library-title">内容草稿</h2></div></header>
+            <header class="panel-header"><div><p class="eyebrow">DRAFTS</p><h2 id="draft-library-title">内容草稿</h2></div><div class="panel-actions"><button id="delete-selected-drafts" class="button danger compact" type="button" disabled>删除选中</button></div></header>
             <div id="draft-list" class="draft-list"><div class="skeleton-line"></div></div>
           </aside>
 
@@ -96,7 +98,7 @@
             </div>
             <div id="studio-editor" hidden>
               <header class="studio-editor-head">
-                <div><p class="eyebrow">90-SECOND FINANCE</p><h2>金融资讯口播</h2></div>
+                <div><p id="studio-editor-kicker" class="eyebrow">90-SECOND FINANCE</p><h2 id="studio-editor-title">金融资讯口播</h2></div>
                 <span id="draft-status-badge" class="badge neutral">等待创建</span>
               </header>
 
@@ -105,7 +107,7 @@
                   <label class="field">内容模板
                     <select id="content-template"></select>
                   </label>
-                  <label class="field">视频标题<span class="required">*</span>
+                  <label class="field"><span class="field-label">视频标题<span class="required">*</span></span>
                     <input id="content-title" maxlength="120" placeholder="例如：今日金融市场观察">
                   </label>
                   <label id="content-focus-field" class="field span-two">关注股票（可选，最多 5 个）
@@ -130,7 +132,13 @@
 
               <footer class="studio-actions">
                 <span id="draft-save-state" class="updated-label">尚未保存</span>
-                <div><button id="save-content-draft" class="button secondary" type="button">生成口播初稿</button><button id="generate-content-video" class="button primary" type="button">保存并生成视频</button></div>
+                <div class="studio-action-controls">
+                  <label class="field compact-field">朗读速度
+                    <input id="content-voice-rate" type="number" min="0.55" max="1.2" step="0.05" value="1.0" inputmode="decimal">
+                    <small>越小越慢，1.0 为正常</small>
+                  </label>
+                  <button id="save-content-draft" class="button secondary" type="button">生成口播初稿</button><button id="generate-content-video" class="button primary" type="button">保存并生成视频</button>
+                </div>
               </footer>
             </div>
           </article>
@@ -138,15 +146,15 @@
       </section>
 
       <section id="jobs-view" class="console-view" hidden>
-      <section class="hero" aria-labelledby="page-title">
-        <div>
+      <section class="hero jobs-hero" aria-labelledby="page-title">
+        <div class="hero-copy-wrap">
           <p class="eyebrow">CONTENT ORCHESTRATION</p>
-          <h1 id="page-title">今天要制作什么？</h1>
+          <h1 id="page-title">掌握每一次内容生产</h1>
           <p class="hero-copy">从素材处理到视频验证，在一个安全工作台中观察每一步。</p>
         </div>
-        <button id="create-task-button" class="button primary hero-button" type="button">
+        <div class="hero-actions"><small>创建后可实时查看执行进度</small><button id="create-task-button" class="button primary hero-button" type="button">
           <span aria-hidden="true">＋</span> 新建任务
-        </button>
+        </button></div>
       </section>
 
       <section id="readiness-strip" class="readiness-strip" aria-label="系统就绪状态">
@@ -154,10 +162,10 @@
       </section>
 
       <section class="stats-grid" aria-label="任务统计">
-        <article class="stat-card accent-all"><span>全部任务</span><strong id="stat-all">—</strong><small>最近记录</small></article>
-        <article class="stat-card accent-running"><span>正在运行</span><strong id="stat-running">—</strong><small>需要持续关注</small></article>
-        <article class="stat-card accent-success"><span>成功完成</span><strong id="stat-succeeded">—</strong><small>包含部分成功</small></article>
-        <article class="stat-card accent-attention"><span>需要处理</span><strong id="stat-attention">—</strong><small>失败或被阻止</small></article>
+        <article class="stat-card accent-all"><span class="stat-icon" aria-hidden="true">◫</span><div><span>全部任务</span><strong id="stat-all">—</strong><small>最近记录</small></div></article>
+        <article class="stat-card accent-running"><span class="stat-icon" aria-hidden="true">▶</span><div><span>正在运行</span><strong id="stat-running">—</strong><small>生成或发布进行中</small></div></article>
+        <article class="stat-card accent-success"><span class="stat-icon" aria-hidden="true">✓</span><div><span>成功完成</span><strong id="stat-succeeded">—</strong><small>包含部分成功</small></div></article>
+        <article class="stat-card accent-attention"><span class="stat-icon" aria-hidden="true">!</span><div><span>需要处理</span><strong id="stat-attention">—</strong><small>生成或发布异常</small></div></article>
       </section>
 
       <section class="workspace">
@@ -167,7 +175,7 @@
               <p class="eyebrow">RECENT ACTIVITY</p>
               <h2 id="jobs-title">最近任务</h2>
             </div>
-            <span id="last-updated" class="updated-label">尚未刷新</span>
+            <div class="panel-actions"><span id="last-updated" class="updated-label">尚未刷新</span><button id="delete-selected-jobs" class="button danger compact" type="button" disabled>删除选中</button></div>
           </header>
 
           <div class="filters" role="search">
@@ -183,7 +191,7 @@
 
           <div class="table-wrap">
             <table class="jobs-table">
-              <thead><tr><th>任务</th><th>流水线</th><th>状态</th><th>更新时间</th><th><span class="sr-only">查看</span></th></tr></thead>
+              <thead><tr><th><span class="sr-only">选择</span></th><th>任务</th><th>流水线</th><th>生成状态</th><th>发布状态</th><th>更新时间</th><th><span class="sr-only">操作</span></th></tr></thead>
               <tbody id="jobs-body"></tbody>
             </table>
             <div id="jobs-empty" class="empty-state" hidden>
@@ -280,6 +288,55 @@
       <button id="cancel-publish-button" class="button ghost" type="button">返回检查</button>
       <button id="confirm-publish-button" class="button danger" type="button" disabled>确认并运行</button>
     </div>
+  </dialog>
+
+  <dialog id="rename-job-dialog" class="modal confirm-modal" aria-labelledby="rename-job-dialog-title">
+    <form id="rename-job-form">
+      <h2 id="rename-job-dialog-title">重命名任务</h2>
+      <p>只修改控制台显示名称，不改变原始任务输入、执行参数或审计记录。</p>
+      <label class="field">显示名称
+        <input id="rename-job-input" maxlength="120" required autocomplete="off">
+      </label>
+      <div class="modal-footer compact-footer">
+        <button id="cancel-rename-job" class="button ghost" type="button">取消</button>
+        <button id="submit-rename-job" class="button primary" type="submit">保存名称</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="job-publish-dialog" class="modal task-modal publication-modal" aria-labelledby="job-publish-dialog-title">
+    <form id="job-publish-form">
+      <header class="modal-header">
+        <div><p class="eyebrow">DEFERRED PUBLISH</p><h2 id="job-publish-dialog-title">设置任务发布</h2></div>
+        <button id="close-job-publish-dialog" class="icon-button" type="button" aria-label="关闭">×</button>
+      </header>
+      <div class="modal-body">
+        <div id="job-publish-alert" class="warning-box" hidden></div>
+        <section class="form-section">
+          <div class="section-heading"><span>01</span><div><h3>发布内容</h3><p>复用已生成并校验的视频，不会重新生成。</p></div></div>
+          <div class="form-grid two-columns">
+            <label class="field span-two">标题<span class="required">*</span><input id="job-publish-title" maxlength="120" required></label>
+            <label class="field span-two">简介<textarea id="job-publish-description" rows="4" maxlength="2000"></textarea></label>
+            <label class="field span-two">标签<small>使用逗号、中文逗号或换行分隔。</small><input id="job-publish-tags" placeholder="AI, 人工智能, 科技"></label>
+          </div>
+        </section>
+        <section class="form-section">
+          <div class="section-heading"><span>02</span><div><h3>发布目标</h3><p>至少选择一个平台；平台隐私策略由服务端强制执行。</p></div></div>
+          <div class="deferred-target-list">
+            <label class="deferred-target-row"><input id="job-publish-douyin-enabled" type="checkbox"><span><strong>抖音</strong><small>仅自己可见</small></span><input id="job-publish-douyin-account" aria-label="抖音账号" placeholder="抖音账号"></label>
+            <label class="deferred-target-row"><input id="job-publish-kuaishou-enabled" type="checkbox"><span><strong>快手</strong><small>仅自己可见</small></span><input id="job-publish-kuaishou-account" aria-label="快手账号" placeholder="快手账号"></label>
+          </div>
+        </section>
+        <section class="form-section publish-confirm-section">
+          <div class="section-heading"><span>03</span><div><h3>最终确认</h3><p>确认值与任务、视频哈希和以上发布设置绑定。</p></div></div>
+          <label class="field">请输入“确认发布”<input id="job-publish-confirm-input" autocomplete="off"></label>
+        </section>
+      </div>
+      <footer class="modal-footer">
+        <button id="cancel-job-publish" class="button ghost" type="button">取消</button>
+        <button id="submit-job-publish" class="button danger" type="submit" disabled>确认并发布</button>
+      </footer>
+    </form>
   </dialog>
 
   <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>

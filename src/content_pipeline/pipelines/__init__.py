@@ -12,6 +12,7 @@ from content_pipeline import (  # noqa: F401, E402
     grouped_anime_pipeline,
     japanese_pipeline,
     script_video_pipeline,
+    xhs_image_note_pipeline,
 )
 from content_pipeline.pipelines import anime  # noqa: F401, E402
 

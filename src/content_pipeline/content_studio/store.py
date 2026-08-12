@@ -79,6 +79,25 @@ class ContentDraftStore:
                     break
             return drafts
 
+    def delete(self, draft_id: str) -> None:
+        path = self._draft_dir(draft_id)
+        with self._lock:
+            if not (path / "draft.json").is_file():
+                raise DraftNotFoundError("content draft not found")
+            _rmtree(path)
+
+    def delete_many(self, draft_ids: list[str]) -> dict[str, list[str]]:
+        result = {"deleted": [], "not_found": [], "failed": []}
+        for draft_id in dict.fromkeys(draft_ids):
+            try:
+                self.delete(draft_id)
+                result["deleted"].append(draft_id)
+            except DraftNotFoundError:
+                result["not_found"].append(draft_id)
+            except OSError:
+                result["failed"].append(draft_id)
+        return result
+
     def source_dir(self, draft_id: str) -> Path:
         path = self._draft_dir(draft_id) / "sources"
         path.mkdir(parents=True, exist_ok=True)
@@ -106,3 +125,14 @@ class ContentDraftStore:
         temporary = path.with_suffix(".json.tmp")
         temporary.write_text(draft.model_dump_json(indent=2), encoding="utf-8")
         temporary.replace(path)
+
+
+def _rmtree(path: Path) -> None:
+    if not path.exists():
+        return
+    for child in sorted(path.iterdir(), key=lambda item: item.is_dir(), reverse=True):
+        if child.is_dir() and not child.is_symlink():
+            _rmtree(child)
+        else:
+            child.unlink(missing_ok=True)
+    path.rmdir()

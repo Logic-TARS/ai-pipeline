@@ -5,6 +5,7 @@ import json
 import re
 import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,23 @@ class NarratedMptResult:
     subtitle: Path
     task_dir: Path
     manifest: Path
+
+
+ProgressCallback = Callable[[int, str, str, bool], None]
+
+
+def _report_mpt_output(line: str, callback: ProgressCallback) -> None:
+    """Translate known MPT log milestones into safe, conservative job progress."""
+    normalized = line.lower()
+    stages = (
+        (("tts", "voice", "audio", "subtitle"), 30, "生成配音与字幕", "MoneyPrinterTurbo 正在生成配音或字幕"),
+        (("pexels", "material", "download", "stock video"), 45, "获取视频素材", "MoneyPrinterTurbo 正在获取视频素材"),
+        (("render", "compose", "combine", "final-1.mp4", "video"), 65, "渲染视频", "MoneyPrinterTurbo 正在合成视频"),
+    )
+    for markers, percent, phase, message in stages:
+        if any(marker in normalized for marker in markers):
+            callback(percent, phase, message, True)
+            return
 
 
 def looks_like_file_reference(value: str) -> bool:
@@ -63,11 +81,12 @@ def _briefing_voice_rate(script: str) -> float:
     return round(max(0.55, min(1.0, estimated_seconds_at_normal / 90.0)), 2)
 
 
-def _identity(title: str, script: str, input_hashes: dict[str, str] | None) -> dict[str, object]:
+def _identity(title: str, script: str, input_hashes: dict[str, str] | None, voice_rate: float) -> dict[str, object]:
     return {
         "title": title,
         "script_sha256": hashlib.sha256(script.encode("utf-8")).hexdigest(),
         "input_sha256": dict(sorted((input_hashes or {}).items())),
+        "voice_rate": voice_rate,
     }
 
 
@@ -106,6 +125,7 @@ def call_narrated_mpt(
     force_regenerate: bool = False,
     input_hashes: dict[str, str] | None = None,
     voice_rate: float | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> NarratedMptResult:
     if looks_like_file_reference(script):
         raise MediaValidationError("narration must be spoken text, not a file path")
@@ -116,7 +136,8 @@ def call_narrated_mpt(
     target_subtitle = output_dir / "subtitle.srt"
     target_manifest = output_dir / "generation_manifest.json"
     task_manifest = task_dir / "ai-popline-manifest.json"
-    identity = _identity(title, script, input_hashes)
+    resolved_voice_rate = voice_rate if voice_rate is not None else _briefing_voice_rate(script)
+    identity = _identity(title, script, input_hashes, resolved_voice_rate)
 
     if (
         not force_regenerate
@@ -126,15 +147,21 @@ def call_narrated_mpt(
         == {"schema_version": "1.0", "task_id": task_name, **identity}
         and _has_valid_narrated_artifacts(target_video, target_subtitle)
     ):
+        if on_progress:
+            on_progress(80, "复用既有视频", "已验证可复用的视频和字幕", False)
         return NarratedMptResult(target_video, target_subtitle, task_dir, target_manifest)
 
     if dry_run:
+        if on_progress:
+            on_progress(20, "初始化 MoneyPrinterTurbo", "正在创建干运行视频产物", False)
         target_video.write_bytes(b"DRY RUN MP4 PLACEHOLDER")
         target_subtitle.write_text(
             "1\n00:00:00,000 --> 00:00:05,000\n" + script[:160] + "\n",
             encoding="utf-8",
         )
         _write_manifest(target_manifest, task_name, identity)
+        if on_progress:
+            on_progress(80, "复制视频产物", "干运行视频和字幕已写入任务目录", False)
         return NarratedMptResult(target_video, target_subtitle, task_dir, target_manifest)
 
     reusable_video = task_dir / "final-1.mp4"
@@ -148,13 +175,17 @@ def call_narrated_mpt(
             payload = {}
         existing_script = payload.get("script") or (payload.get("params") or {}).get("video_script")
         manifest_identity = _read_manifest(task_manifest)
-        exact_task_match = existing_script == script and (
-            not input_hashes or all(manifest_identity.get(key) == value for key, value in identity.items())
+        exact_task_match = existing_script == script and all(
+            manifest_identity.get(key) == value for key, value in identity.items()
         )
     if not force_regenerate and exact_task_match and _has_valid_narrated_artifacts(reusable_video, reusable_subtitle):
+        if on_progress:
+            on_progress(80, "复用既有视频", "已验证 MoneyPrinterTurbo 的既有视频和字幕", False)
         shutil.copy2(reusable_video, target_video)
         shutil.copy2(reusable_subtitle, target_subtitle)
         _write_manifest(target_manifest, task_name, identity)
+        if on_progress:
+            on_progress(85, "复制视频产物", "既有视频和字幕已复制到任务目录", False)
         return NarratedMptResult(target_video, target_subtitle, task_dir, target_manifest)
 
     if task_dir.exists():
@@ -174,7 +205,7 @@ def call_narrated_mpt(
         "--voice-name",
         "zh-CN-YunxiNeural",
         "--voice-rate",
-        str(voice_rate if voice_rate is not None else _briefing_voice_rate(script)),
+        str(resolved_voice_rate),
         "--subtitle-enabled",
         "--task-id",
         task_name,
@@ -182,6 +213,13 @@ def call_narrated_mpt(
 
     stdout = ""
     timed_out = False
+    if on_progress:
+        on_progress(15, "初始化 MoneyPrinterTurbo", "MoneyPrinterTurbo 已启动，正在准备视频任务", False)
+
+    def handle_output(_stream: str, line: str) -> None:
+        if on_progress:
+            _report_mpt_output(line, on_progress)
+
     try:
         result = run_command(
             command,
@@ -189,6 +227,7 @@ def call_narrated_mpt(
             timeout=3600,
             retries=2,
             env={"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
+            on_output=handle_output if on_progress else None,
         )
         stdout = result.stdout
     except subprocess.TimeoutExpired:
@@ -210,8 +249,12 @@ def call_narrated_mpt(
     if timed_out and not _has_valid_narrated_artifacts(source_video, source_subtitle):
         raise ExternalToolError(f"MPT timed out with incomplete narrated artifacts in {task_dir}")
 
+    if on_progress:
+        on_progress(80, "复制视频产物", "视频和字幕已生成，正在复制到任务目录", False)
     shutil.copy2(source_video, target_video)
     shutil.copy2(source_subtitle, target_subtitle)
     _write_manifest(task_manifest, task_name, identity)
     _write_manifest(target_manifest, task_name, identity)
+    if on_progress:
+        on_progress(85, "复制视频产物", "视频、字幕和生成清单已写入任务目录", False)
     return NarratedMptResult(target_video, target_subtitle, task_dir, target_manifest)
