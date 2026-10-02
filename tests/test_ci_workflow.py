@@ -18,7 +18,7 @@ def test_quality_workflow_runs_project_quality_gate() -> None:
     triggers = workflow["on"]
     assert "pull_request" in triggers
     assert "push" in triggers
-    assert triggers["push"]["branches"] == ["main"]
+    assert triggers["push"]["branches"] == ["master"]
     assert "workflow_dispatch" in triggers
 
     job = workflow["jobs"]["check"]
