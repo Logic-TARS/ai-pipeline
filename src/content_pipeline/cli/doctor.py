@@ -1,4 +1,4 @@
-"""ai-popline doctor — environment and tool diagnostics."""
+"""ai-pipeline doctor — environment and tool diagnostics."""
 
 from __future__ import annotations
 
@@ -9,6 +9,8 @@ from pathlib import Path
 
 from content_pipeline.api.network import validate_bind_configuration
 from content_pipeline.settings import load_settings
+
+__all__ = ["run_doctor", "run_doctor_bundle"]
 
 
 def _check(label: str, ok: bool, detail: str = "") -> str:
@@ -29,7 +31,7 @@ def run_doctor() -> int:
 
     all_ok = True
 
-    print("AI Popline Doctor")
+    print("AI Pipeline Doctor")
     print("=" * 50)
 
     # 1. Python version
@@ -133,24 +135,56 @@ def run_doctor_bundle(output_path: Path) -> int:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        # Write diagnostic summary
-        summary_lines = [
-            "ai-popline doctor bundle",
-            f"Generated: {datetime.now(UTC).isoformat()}",
-            f"Python: {sys.version}",
-            f"Platform: {sys.platform}",
-            "",
-            "--- Settings ---",
-        ]
-        for field_name, field_value in sorted(settings.model_dump().items()):
-            summary_lines.append(f"{field_name}: {field_value}")
-        summary_lines.append("")
-        summary_lines.append("--- Warnings ---")
-        summary_lines.extend(settings.validate_tool_paths())
-        zf.writestr("diagnostics.txt", "\n".join(summary_lines))
+        zf.writestr("diagnostics.txt", "\n".join(_diagnostic_summary(settings)))
 
     print(f"Diagnostics bundle written to: {output_path}")
     return 0
+
+
+def _diagnostic_summary(settings) -> list[str]:
+    summary_lines = [
+        "ai-pipeline doctor bundle",
+        f"Generated: {datetime.now(UTC).isoformat()}",
+        f"Python: {sys.version}",
+        f"Platform: {sys.platform}",
+        "",
+        "--- Settings ---",
+    ]
+    for field_name, field_value in sorted(settings.model_dump().items()):
+        summary_lines.append(f"{field_name}: {_redact_setting(field_name, field_value)}")
+
+    summary_lines.append("")
+    summary_lines.append("--- External Tools ---")
+    for tool_name, status in sorted(settings.get_tool_status().items()):
+        summary_lines.append(f"{tool_name}.ok: {bool(status.get('ok'))}")
+        for key, value in sorted(status.items()):
+            if key == "ok":
+                continue
+            summary_lines.append(f"{tool_name}.{key}: {_redact_setting(key, value)}")
+
+    summary_lines.append("")
+    summary_lines.append("--- Web Security ---")
+    web_errors = validate_bind_configuration(
+        settings,
+        host=settings.web_bind_host,
+        ssl_certfile=settings.web_tls_certfile,
+        ssl_keyfile=settings.web_tls_keyfile,
+    )
+    summary_lines.append(f"bind_policy_ok: {not web_errors}")
+    summary_lines.extend(f"web_error: {error}" for error in web_errors)
+
+    summary_lines.append("")
+    summary_lines.append("--- Warnings ---")
+    warnings = settings.validate_tool_paths()
+    summary_lines.extend(warnings or ["none"])
+    return summary_lines
+
+
+def _redact_setting(field_name: str, value) -> str:
+    lowered = field_name.lower()
+    if any(marker in lowered for marker in ("token", "secret", "key", "password", "credential", "cookie")):
+        return "**********" if str(value) else ""
+    return str(value)
 
 
 def _ensure_dir(path: Path) -> bool:

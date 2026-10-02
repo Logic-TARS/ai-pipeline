@@ -1,4 +1,4 @@
-"""CLI entry points for ai-popline."""
+"""CLI entry points for ai-pipeline."""
 
 from __future__ import annotations
 
@@ -7,21 +7,57 @@ import json
 import sys
 from pathlib import Path
 
+from pydantic import ValidationError
+
+from content_pipeline.api.ui_schema import validate_task_for_ui
 from content_pipeline.job_store import JobStore
 from content_pipeline.models import JobStatus, TaskInput
-from content_pipeline.orchestrator import run_task_file
+from content_pipeline.orchestrator import Orchestrator
 from content_pipeline.settings import load_settings
+
+__all__ = ["main"]
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def _load_task_file(path: Path) -> TaskInput:
+    try:
+        content = path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise SystemExit(f"task file does not exist: {path}") from exc
+    except OSError as exc:
+        raise SystemExit(f"cannot read task file {path}: {exc}") from exc
+    try:
+        return TaskInput.model_validate_json(content)
+    except ValidationError as exc:
+        raise SystemExit(f"invalid task file {path}: {exc}") from exc
+
+
+def _validate_task_file(path: Path) -> TaskInput:
+    task = _load_task_file(path)
+    if task.content_type is None:
+        return task
+    try:
+        normalized, _warnings = validate_task_for_ui(task)
+        return normalized
+    except (ValidationError, ValueError) as exc:
+        raise SystemExit(f"invalid task file {path}: {exc}") from exc
 
 
 def main() -> int:
-    """Main CLI entry point for ai-popline."""
+    """Main CLI entry point for ai-pipeline."""
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
         sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     except (AttributeError, OSError):
         pass
 
-    parser = argparse.ArgumentParser(description="AI Popline Content Pipeline")
+    parser = argparse.ArgumentParser(description="AI Pipeline")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     doctor_parser = subparsers.add_parser("doctor", help="Check environment, paths, and external tools")
@@ -37,6 +73,11 @@ def main() -> int:
     serve_parser.add_argument("--port", type=int)
     serve_parser.add_argument("--ssl-certfile", type=Path)
     serve_parser.add_argument("--ssl-keyfile", type=Path)
+    serve_parser.add_argument(
+        "--allow-container-wildcard",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
 
     subparsers.add_parser("mcp", help="Start the MCP server")
 
@@ -49,17 +90,17 @@ def main() -> int:
     jobs_list = jobs_subparsers.add_parser("list", help="List recent jobs")
     jobs_list.add_argument("--status", choices=[status.value for status in JobStatus])
     jobs_list.add_argument("--content-type")
-    jobs_list.add_argument("--limit", type=int, default=50)
+    jobs_list.add_argument("--limit", type=_positive_int, default=50)
 
     jobs_show = jobs_subparsers.add_parser("show", help="Show a job snapshot")
     jobs_show.add_argument("task_id")
 
     jobs_events = jobs_subparsers.add_parser("events", help="Show recent job events")
     jobs_events.add_argument("task_id")
-    jobs_events.add_argument("--limit", type=int, default=50)
+    jobs_events.add_argument("--limit", type=_positive_int, default=50)
 
     jobs_cleanup = jobs_subparsers.add_parser("cleanup", help="Delete old jobs")
-    jobs_cleanup.add_argument("--older-than-days", type=int, default=30)
+    jobs_cleanup.add_argument("--older-than-days", type=_positive_int, default=30)
 
     args = parser.parse_args()
 
@@ -74,7 +115,12 @@ def main() -> int:
 
         return run_capabilities()
     if args.command == "run":
-        result = run_task_file(args.task)
+        task = _validate_task_file(args.task)
+        settings = load_settings()
+        orchestrator = Orchestrator(settings=settings)
+        task_id = orchestrator.submit(task)
+        orchestrator.run(task_id)
+        result = orchestrator.store.get(task_id).model_dump(mode="json")
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result["status"] in {"succeeded", "partial"} else 1
     if args.command == "serve":
@@ -94,13 +140,15 @@ def main() -> int:
             host=host,
             ssl_certfile=ssl_certfile,
             ssl_keyfile=ssl_keyfile,
+            allow_container_wildcard=args.allow_container_wildcard,
         )
         if errors:
             raise SystemExit("unsafe web listener:\n- " + "\n- ".join(errors))
-        try:
-            ensure_bind_address_is_local(host)
-        except ValueError as exc:
-            raise SystemExit(str(exc)) from exc
+        if not args.allow_container_wildcard:
+            try:
+                ensure_bind_address_is_local(host)
+            except ValueError as exc:
+                raise SystemExit(str(exc)) from exc
         for path, label in ((ssl_certfile, "TLS certificate"), (ssl_keyfile, "TLS key")):
             if path is not None and not path.is_file():
                 raise SystemExit(f"{label} does not exist: {path}")
@@ -120,7 +168,7 @@ def main() -> int:
 
         return mcp_main()
     if args.command == "validate-task":
-        task = TaskInput.model_validate_json(args.task.read_text(encoding="utf-8"))
+        task = _validate_task_file(args.task)
         print(json.dumps(task.model_dump(mode="json"), ensure_ascii=False, indent=2))
         return 0
     if args.command == "jobs":
@@ -141,15 +189,22 @@ def _run_jobs_command(args: argparse.Namespace) -> int:
         return 0
 
     if args.jobs_command == "show":
-        print(json.dumps(store.get(args.task_id).model_dump(mode="json"), ensure_ascii=False, indent=2))
+        try:
+            print(json.dumps(store.get(args.task_id).model_dump(mode="json"), ensure_ascii=False, indent=2))
+        except FileNotFoundError as exc:
+            raise SystemExit(f"task not found: {args.task_id}") from exc
         return 0
 
     if args.jobs_command == "events":
-        events_path = store.events_path(args.task_id)
-        if not events_path.is_file():
-            raise FileNotFoundError(f"task not found: {args.task_id}")
-        events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-        print(json.dumps(events[-args.limit :], ensure_ascii=False, indent=2))
+        try:
+            events = store.read_events(args.task_id, limit=args.limit)
+        except FileNotFoundError as exc:
+            raise SystemExit(f"task not found: {args.task_id}") from exc
+        except OSError as exc:
+            raise SystemExit(f"cannot read job events for task {args.task_id}: {exc}") from exc
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"invalid job events for task {args.task_id}: {exc}") from exc
+        print(json.dumps(events, ensure_ascii=False, indent=2))
         return 0
 
     if args.jobs_command == "cleanup":

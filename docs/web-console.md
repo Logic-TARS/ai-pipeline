@@ -1,16 +1,16 @@
 # Web Operator Console
 
-AI Popline includes a no-Node, no-CDN operator console packaged with the Python service. It is intended for one operator on loopback or the guarded ZeroTier boundary.
+AI Pipeline includes a no-Node, no-CDN operator console packaged with the Python service. It is intended for one operator on loopback or the guarded ZeroTier boundary. Production handoff should use the packaged `ai-pipeline serve` entry point only after `bash scripts/check.sh` has passed the package, dependency, installed-wheel, and isolated-wheel smoke gates.
 
 ## Start and open
 
 ```powershell
-ai-popline serve
+ai-pipeline serve
 ```
 
 Open `http://127.0.0.1:8080/` for the default loopback configuration. A configured ZeroTier deployment uses its HTTPS origin instead; follow the [ZeroTier Web Access Runbook](zerotier-web-access.md).
 
-When `WEB_AUTH_REQUIRED=true`, enter `WEB_ADMIN_TOKEN` on the login screen. The token is exchanged for a signed, HttpOnly session cookie that lasts 7 days by default; the console automatically supplies the separate CSRF token for writes and clears both cookies when you log out. Publishing keeps an independent 5-minute recent-login requirement and prompts for renewed administrator authentication without treating the normal session as expired.
+When `WEB_AUTH_REQUIRED=true`, enter `WEB_ADMIN_TOKEN` on the login screen. The token is exchanged for a signed, HttpOnly session cookie that lasts 7 days by default; the console automatically supplies the separate CSRF token for writes and clears both cookies when you log out. Publishing has an independently configurable recent-login window that also defaults to 7 days. Operators can shorten `WEB_PUBLISH_REAUTH_SECONDS` to require renewed administrator authentication for publishing without treating the normal session as expired; leaving it equal to the session lifetime reduces protection against publishing from a stolen or unattended session.
 
 ## Content studio
 
@@ -27,7 +27,7 @@ The draft library supports create, read, revision-checked update, single delete,
 The **任务中心** shows:
 
 - recent-job counts and active/attention totals;
-- storage, profiles, and Web publishing readiness flags without local paths;
+- storage, profiles, packaged pipeline defaults, and Web publishing readiness flags without local paths;
 - status, pipeline, and text filters;
 - automatic 2.5-second refresh while jobs are queued or running, and slower idle refresh;
 - separate generation and publication status columns, so a generated video is never presented as already published;
@@ -39,7 +39,16 @@ Polling pauses while the browser tab is hidden. Use **Refresh** for an immediate
 
 Recent tasks can be renamed, read, deleted individually, or deleted in a selected batch. Renaming writes a separate display name and never mutates the original task description, execution parameters, event history, artifacts, status, or publication evidence. Queued/running tasks and tasks with an active publication attempt cannot be deleted. These restrictions are enforced by the API even if a browser control is bypassed.
 
-The console and API expose a versioned CRUD capability contract through `/ui/bootstrap`. If the browser reports `405 Method Not Allowed` after an upgrade, the static files and backend route table are out of sync: restart the non-reloading `ai-popline serve` process, then refresh the page. The console disables unsupported CRUD controls when it detects an older backend contract.
+The console and API expose a versioned CRUD capability contract through `/ui/bootstrap`. If the browser reports `405 Method Not Allowed` after an upgrade, the static files and backend route table are out of sync: restart the non-reloading `ai-pipeline serve` process, then refresh the page. The console disables unsupported CRUD controls when it detects an older backend contract.
+
+## Scheduled tasks
+
+The **定时任务** workspace manages recurring task schedules. Each schedule binds a name, a pipeline, task parameters (description, topic, optional params JSON), and a daily or weekly local run time. A background runner inside the web process checks schedules every 30 seconds and submits due tasks through the same orchestrator path as manual runs, so results appear in the **任务中心** like any other job.
+
+- Schedules are stored as JSON files under `<data_dir>/schedules/` and survive restarts.
+- Scheduled tasks run with `publish=false` by default; the create dialog offers a **生成后尝试发布** toggle to opt into publishing after generation and validation. Publishing schedules are rejected with 403 while `WEB_PUBLISH_ENABLED` is off, matching the manual run policy.
+- Each schedule can be edited in place (**编辑** updates name, timing, pipeline, task parameters, and the publish toggle), enabled/disabled (disabling clears the next run time), deleted, or triggered immediately with **立即运行**, which does not disturb the regular cadence.
+- The `/schedules` API requires the same authentication as the rest of the console, and the `task_schedules` feature flag in `/ui/bootstrap` advertises availability.
 
 ## Create a task
 
@@ -52,7 +61,7 @@ Select **New task**, then choose one of the six pipelines. The form is generated
 5. Select **Preflight task** to validate and normalize the task without creating a job or calling an external tool.
 6. Review the final JSON and select **Start run**.
 
-Path fields are paths on the AI Popline server workstation. Browsers cannot browse arbitrary server files, and a path from a different client operating system is not uploaded or translated automatically.
+Path fields are paths on the AI Pipeline server workstation. Browsers cannot browse arbitrary server files, and a path from a different client operating system is not uploaded or translated automatically.
 
 ## Job details and artifacts
 
@@ -68,8 +77,8 @@ Content Studio publishing is a separate, post-generation operation. Generating c
 
 1. Generate the video in Content Studio and review the validated artifact in the task center.
 2. Ensure `WEB_PUBLISH_ENABLED=true` is configured on the server.
-3. Select **设置发布** on the completed task and adjust platform, account, title, description, and tags.
-4. Type `确认发布` and submit. The backend binds `PUBLISH:<fingerprint>` to the source task ID, current video SHA-256, and the complete normalized publication request.
+3. Select **设置发布** on the completed task and adjust platform, account, visibility, title, description, and tags. Each target defaults to **仅自己可见**; selecting **公开可见** publishes openly, is highlighted in the confirmation dialog, and changes the confirmation fingerprint. Tencent targets always save a draft and ignore the visibility choice.
+4. Type `确认发布` and submit. The backend binds `PUBLISH:<fingerprint>` to the source task ID, current video SHA-256, and the complete normalized publication request (including each target's visibility).
 
 The publisher reuses the guarded video artifact and never reruns MoneyPrinterTurbo. Video replacement after confirmation invalidates the fingerprint. An active attempt blocks concurrent publication; completed partial or failed attempts can be adjusted and retried. Per-platform results are independent, while recent-login, private visibility, artifact containment, deduplication, and uploader guards remain enforced.
 
@@ -78,7 +87,7 @@ The generic **新建任务** dialog retains its existing optional generate-and-p
 ## Common errors
 
 - **401 / login screen:** the 7-day session expired or its signature is invalid; log in again.
-- **Recent authentication required for publishing:** the normal session remains valid, but the 5-minute publishing window elapsed; log out and log in again before publishing.
+- **Recent authentication required for publishing:** the normal session remains valid, but the configured publishing authentication window elapsed; log in again before publishing. This normally appears only when `WEB_PUBLISH_REAUTH_SECONDS` has been set shorter than the session lifetime.
 - **CSRF failed:** refresh the page and log in again so the session and CSRF cookies match.
 - **Peer, Host, Origin, or HTTPS rejected:** review the ZeroTier listener, firewall, allowed hosts/origins, and certificate configuration.
 - **Preflight field errors:** correct the named form field or advanced JSON value; preflight does not create a failed job.

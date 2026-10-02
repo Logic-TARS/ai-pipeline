@@ -1,7 +1,14 @@
 "use strict";
 
 window.ContentStudio = (() => {
-  const STUDIO_FORM_MEMORY_STORAGE_KEY = "ai-popline-studio-form-memory-v1";
+  const STUDIO_FORM_MEMORY_STORAGE_KEY = "ai-pipeline-studio-form-memory-v1";
+  const LEGACY_STUDIO_FORM_MEMORY_STORAGE_KEY = "ai-popline-studio-form-memory-v1";
+  const FINANCE_SOURCE_TOGGLES = [
+    { source_id: "finance-daily", label: "当天基金日报", skill_id: "FINANCE_DAILY_MARKDOWN" },
+    { source_id: "gold", label: "黄金行情", skill_id: "TTFUND_GOLD_INFO" },
+    { source_id: "bond", label: "债市晴雨表", skill_id: "TTFUND_BOND_MARKET" },
+    { source_id: "macro-cn", label: "中国宏观数据", skill_id: "TTFUND_MACRO_DATA" },
+  ];
 
   const studio = {
     request: null,
@@ -21,7 +28,8 @@ window.ContentStudio = (() => {
 
   function readStudioFormMemory() {
     try {
-      const stored = localStorage.getItem(STUDIO_FORM_MEMORY_STORAGE_KEY);
+      const stored = localStorage.getItem(STUDIO_FORM_MEMORY_STORAGE_KEY)
+        ?? localStorage.getItem(LEGACY_STUDIO_FORM_MEMORY_STORAGE_KEY);
       const parsed = stored ? JSON.parse(stored) : {};
       return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
     } catch (error) {
@@ -72,6 +80,9 @@ window.ContentStudio = (() => {
     });
     byId("content-title").addEventListener("input", markUnsaved);
     byId("content-focus-assets").addEventListener("input", markUnsaved);
+    byId("research-source-toggles").addEventListener("change", (event) => {
+      if (event.target.matches("[data-source-toggle]")) markUnsaved();
+    });
     byId("content-voice-rate").addEventListener("input", () => {
       rememberVoiceRate();
       markUnsaved();
@@ -103,14 +114,16 @@ window.ContentStudio = (() => {
   }
 
   function switchView(view) {
-    const selected = view === "jobs" ? "jobs" : "studio";
+    const selected = ["studio", "jobs", "schedule"].includes(view) ? view : "studio";
     byId("studio-view").hidden = selected !== "studio";
     byId("jobs-view").hidden = selected !== "jobs";
+    byId("schedule-view").hidden = selected !== "schedule";
     document.querySelectorAll("[data-console-view]").forEach((button) => {
       const active = button.dataset.consoleView === selected;
       button.classList.toggle("active", active);
       button.setAttribute("aria-current", active ? "page" : "false");
     });
+    if (selected === "schedule") window.TaskScheduler?.load();
   }
 
   function renderReadiness() {
@@ -150,7 +163,7 @@ window.ContentStudio = (() => {
           <p>${escapeHtml(template.description || "创建一份可核对的口播草稿。")}</p>
         </div>
         <div class="template-meta">
-          <span>${escapeHtml(String(chars.minimum || 350))}-${escapeHtml(String(chars.maximum || 500))} 字</span>
+          <span>${escapeHtml(String(chars.minimum || 300))}-${escapeHtml(String(chars.maximum || 600))} 字</span>
           ${template.supports_focus_assets ? "<span>支持关注股票</span>" : "<span>无需额外参数</span>"}
         </div>
         <div class="template-sources">${sourceList}</div>
@@ -172,6 +185,7 @@ window.ContentStudio = (() => {
     byId("content-script").disabled = true;
     byId("content-voice-rate").value = rememberedVoiceRate();
     applyTemplateAppearance(true);
+    renderSourceToggles(null);
     byId("research-grid").innerHTML = `<div class="empty-inline">创建草稿后将自动获取资料并写入口播稿。</div>`;
     byId("research-alert").hidden = true;
     byId("research-updated").textContent = "尚未采集";
@@ -236,7 +250,7 @@ window.ContentStudio = (() => {
     const supported = studio.featureEnabled?.("content_draft_bulk_delete") === true;
     const count = studio.selectedDraftIds.size;
     button.disabled = !supported || count === 0;
-    button.title = supported ? "" : "后端版本较旧，请重启 AI Popline 服务";
+    button.title = supported ? "" : "后端版本较旧，请重启 AI Pipeline 服务";
     button.textContent = count ? `删除选中（${count}）` : "删除选中";
   }
 
@@ -318,7 +332,11 @@ window.ContentStudio = (() => {
     byId("save-content-draft").textContent = "保存口播稿";
     byId("generate-content-video").disabled = draft.status === "collecting";
     byId("refresh-research").disabled = draft.status === "collecting";
-    byId("draft-save-state").textContent = `版本 ${draft.revision} · 已保存于 ${formatDateTime(draft.updated_at)}`;
+    renderSourceToggles(draft);
+    const generation = draft.script_generation || {};
+    const mode = generation.generation_mode ? ` · ${generation.generation_mode}` : "";
+    const attempts = Array.isArray(generation.attempts) ? ` · ${generation.attempts.length} 次尝试` : "";
+    byId("draft-save-state").textContent = `版本 ${draft.revision}${mode}${attempts} · 已保存于 ${formatDateTime(draft.updated_at)}`;
     renderDraftStatus(draft);
     renderResearch(draft);
     updateScriptChecks();
@@ -329,6 +347,35 @@ window.ContentStudio = (() => {
     const classes = { collecting: "running", ready: "succeeded", partial: "partial", failed: "failed" };
     byId("draft-status-badge").className = `badge ${classes[draft.status] || "neutral"}`;
     byId("draft-status-badge").textContent = labels[draft.status] || draft.status;
+  }
+
+  function enabledSourceIdsForDraft(draft) {
+    const sourceIds = draft ? draft.enabled_source_ids : null;
+    if (Array.isArray(sourceIds)) return sourceIds;
+    return FINANCE_SOURCE_TOGGLES.map((source) => source.source_id);
+  }
+
+  function selectedEnabledSourceIds() {
+    return Array.from(byId("research-source-toggles").querySelectorAll("[data-source-toggle]:checked"))
+      .map((input) => input.dataset.sourceToggle);
+  }
+
+  function renderSourceToggles(draft) {
+    const templateId = draft?.template_id || byId("content-template").value || "finance_90s";
+    const container = byId("research-source-toggles");
+    if (templateId !== "finance_90s") {
+      container.hidden = true;
+      container.innerHTML = "";
+      return;
+    }
+    container.hidden = false;
+    const enabled = new Set(enabledSourceIdsForDraft(draft));
+    const disabled = draft?.status === "collecting";
+    container.innerHTML = FINANCE_SOURCE_TOGGLES.map((source) => `
+      <label class="source-toggle-item">
+        <span><strong>${escapeHtml(source.label)}</strong><small>${escapeHtml(source.skill_id)}</small></span>
+        <input type="checkbox" role="switch" data-source-toggle="${escapeHtml(source.source_id)}" ${enabled.has(source.source_id) ? "checked" : ""} ${disabled ? "disabled" : ""}>
+      </label>`).join("");
   }
 
   function renderResearch(draft) {
@@ -371,6 +418,7 @@ window.ContentStudio = (() => {
             template_id: byId("content-template").value || "finance_90s",
             title,
             focus_assets: parseFocusAssets(),
+            enabled_source_ids: selectedEnabledSourceIds(),
           },
         });
       } else {
@@ -400,7 +448,7 @@ window.ContentStudio = (() => {
     try {
       studio.current = await studio.request(`/content/drafts/${studio.current.draft_id}/refresh`, {
         method: "POST",
-        body: { revision: studio.current.revision },
+        body: { revision: studio.current.revision, enabled_source_ids: selectedEnabledSourceIds() },
       });
       renderDraft();
       schedulePoll();
@@ -435,8 +483,8 @@ window.ContentStudio = (() => {
       studio.toast(messages?.[0] || error.message, "error");
       updateScriptChecks();
     } finally {
-      generateButton.disabled = false;
       generateButton.textContent = originalLabel;
+      updateScriptChecks();
     }
   }
 
@@ -457,20 +505,29 @@ window.ContentStudio = (() => {
 
   function updateScriptChecks() {
     const script = byId("content-script").value.trim();
-    const lengthOkay = script.length >= 350 && script.length <= 500;
-    const requiresDisclaimer = selectedTemplate()?.requires_finance_disclaimer === true;
+    const template = selectedTemplate();
+    const chars = template?.target_chars || {};
+    const minChars = Number(chars.minimum || 300);
+    const maxChars = Number(chars.maximum || 600);
+    const lengthLabel = `${minChars}–${maxChars}`;
+    const lengthOkay = script.length >= minChars && script.length <= maxChars;
+    const requiresDisclaimer = template?.requires_finance_disclaimer === true;
     const disclaimerOkay = !requiresDisclaimer || script.includes("不构成投资建议");
-    const complete = !["请根据左侧", "待补充", "TODO", "{{", "}}"].some((marker) => script.includes(marker));
-    byId("script-counter").textContent = `${script.length} / 350–500`;
+    const complete = script.length > 0
+      && !["请根据左侧", "待补充", "TODO", "{{", "}}"].some((marker) => script.includes(marker));
+    byId("script-counter").textContent = `${script.length} / ${lengthLabel}`;
     byId("script-counter").classList.toggle("valid", lengthOkay);
+    byId("script-counter").classList.toggle("warning", !lengthOkay);
     const checks = [
-      checkItem(lengthOkay, "字数在 350–500 之间"),
+      lengthOkay
+        ? checkItem(true, `字数在 ${lengthLabel} 建议范围内`)
+        : checkItem(false, `超出 ${lengthLabel} 字建议范围，仍可生成和发布`, "warning"),
       checkItem(complete, "没有未完成占位内容"),
     ];
     if (requiresDisclaimer) checks.splice(1, 0, checkItem(disclaimerOkay, "包含“不构成投资建议”风险提示"));
     byId("script-checks").innerHTML = checks.join("");
     if (studio.current && studio.current.status !== "collecting") {
-      byId("generate-content-video").disabled = !(lengthOkay && disclaimerOkay && complete);
+      byId("generate-content-video").disabled = !(disclaimerOkay && complete);
     }
   }
 
@@ -493,10 +550,13 @@ window.ContentStudio = (() => {
     byId("studio-editor-kicker").textContent = template.template_id === "ai_briefing_90s" ? "90-SECOND AI BRIEFING" : "90-SECOND FINANCE";
     byId("studio-editor-title").textContent = template.label || "资讯口播";
     if (resetTitle) byId("content-title").value = template.default_title || "内容口播";
+    const chars = template.target_chars || {};
+    const lengthLabel = `${chars.minimum || 300}–${chars.maximum || 600}`;
     byId("content-script").placeholder = template.requires_finance_disclaimer
-      ? "系统会根据上方资料自动生成 350–500 字口播初稿，请核对后保留“不构成投资建议”的风险提示。"
-      : "系统会根据最新 AI 简报资料自动生成 350–500 字口播初稿，请核对日期、产品名称和事实。";
+      ? `资料返回后将调用 DeepSeek 生成 ${lengthLabel} 字口播初稿；生成视频前请核对事实和风险提示。`
+      : `资料返回后将调用 DeepSeek 生成 ${lengthLabel} 字口播初稿；生成视频前请核对日期、产品名称和事实。`;
     byId("save-content-draft").textContent = studio.current ? "保存口播稿" : createDraftLabel(template);
+    renderSourceToggles(studio.current);
     updateScriptChecks();
   }
 
@@ -513,8 +573,10 @@ window.ContentStudio = (() => {
     return `创建${template.label}`;
   }
 
-  function checkItem(valid, label) {
-    return `<span class="script-check ${valid ? "valid" : ""}">${valid ? "✓" : "○"} ${escapeHtml(label)}</span>`;
+  function checkItem(valid, label, state = "") {
+    const className = valid ? "valid" : state;
+    const symbol = valid ? "✓" : state === "warning" ? "!" : "○";
+    return `<span class="script-check ${className}">${symbol} ${escapeHtml(label)}</span>`;
   }
 
   function markUnsaved() {

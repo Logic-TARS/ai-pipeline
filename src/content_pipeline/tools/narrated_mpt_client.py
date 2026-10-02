@@ -13,8 +13,10 @@ from pathlib import Path
 from content_pipeline.errors import ExternalToolError, MediaValidationError
 from content_pipeline.media_validation import validate_video
 from content_pipeline.settings import Settings
-from content_pipeline.tools.common import run_command
-from content_pipeline.tools.mpt_client import _extract_video_path
+from content_pipeline.tools.common import _legacy_mpt_task_id, _mpt_temporary_environment, mpt_task_id, run_command
+from content_pipeline.tools.mpt_client import _extract_video_path, _guard_generated_video
+
+__all__ = ["NarratedMptResult", "call_narrated_mpt", "looks_like_file_reference", "validate_spoken_subtitle"]
 
 
 @dataclass(frozen=True)
@@ -72,11 +74,19 @@ def _has_valid_narrated_artifacts(video: Path, subtitle: Path) -> bool:
     return True
 
 
+def _guard_generated_subtitle(subtitle: Path, task_dir: Path) -> Path:
+    resolved_subtitle = subtitle.resolve()
+    resolved_task_dir = task_dir.resolve()
+    if subtitle.is_symlink() or not resolved_subtitle.is_file() or resolved_subtitle.parent != resolved_task_dir:
+        raise ExternalToolError(f"MPT reported an invalid subtitle path: {subtitle}")
+    return resolved_subtitle
+
+
 def _briefing_voice_rate(script: str) -> float:
-    """Choose a TTS rate that keeps the normal 350-500 character script near 90s."""
+    """Choose a TTS rate that keeps the recommended 300-600 character script near 90s."""
     # Measured on the installed zh-CN-YunxiNeural voice: 482 chars at 1.0
-    # produced 74.04s. The bounded estimate keeps short and long briefings
-    # close to the same target without changing the required script limits.
+    # produced 74.04s. The bounded estimate also handles scripts outside the
+    # recommended range without imposing a hard length limit.
     estimated_seconds_at_normal = len(script) * (74.04 / 482)
     return round(max(0.55, min(1.0, estimated_seconds_at_normal / 90.0)), 2)
 
@@ -131,11 +141,17 @@ def call_narrated_mpt(
         raise MediaValidationError("narration must be spoken text, not a file path")
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    task_dir = settings.mpt_dir / "storage" / "tasks" / task_name
+    mpt_name = mpt_task_id(task_name)
+    new_task_dir = settings.mpt_dir / "storage" / "tasks" / mpt_name
+    task_dir = new_task_dir
+    legacy_task_dir = settings.mpt_dir / "storage" / "tasks" / _legacy_mpt_task_id(task_name)
+    if not task_dir.exists() and legacy_task_dir.exists():
+        task_dir = legacy_task_dir
     target_video = output_dir / "final-1.mp4"
     target_subtitle = output_dir / "subtitle.srt"
     target_manifest = output_dir / "generation_manifest.json"
-    task_manifest = task_dir / "ai-popline-manifest.json"
+    task_manifest = task_dir / "ai-pipeline-manifest.json"
+    legacy_task_manifest = task_dir / "ai-popline-manifest.json"
     resolved_voice_rate = voice_rate if voice_rate is not None else _briefing_voice_rate(script)
     identity = _identity(title, script, input_hashes, resolved_voice_rate)
 
@@ -175,10 +191,14 @@ def call_narrated_mpt(
             payload = {}
         existing_script = payload.get("script") or (payload.get("params") or {}).get("video_script")
         manifest_identity = _read_manifest(task_manifest)
+        if not manifest_identity:
+            manifest_identity = _read_manifest(legacy_task_manifest)
         exact_task_match = existing_script == script and all(
             manifest_identity.get(key) == value for key, value in identity.items()
         )
     if not force_regenerate and exact_task_match and _has_valid_narrated_artifacts(reusable_video, reusable_subtitle):
+        reusable_video = _guard_generated_video(reusable_video, settings.mpt_dir)
+        reusable_subtitle = _guard_generated_subtitle(reusable_subtitle, task_dir)
         if on_progress:
             on_progress(80, "复用既有视频", "已验证 MoneyPrinterTurbo 的既有视频和字幕", False)
         shutil.copy2(reusable_video, target_video)
@@ -190,6 +210,8 @@ def call_narrated_mpt(
 
     if task_dir.exists():
         _archive_stale_task(task_dir)
+    task_dir = new_task_dir
+    task_manifest = task_dir / "ai-pipeline-manifest.json"
 
     command = [
         str(settings.mpt_python),
@@ -208,7 +230,7 @@ def call_narrated_mpt(
         str(resolved_voice_rate),
         "--subtitle-enabled",
         "--task-id",
-        task_name,
+        mpt_name,
     ]
 
     stdout = ""
@@ -221,15 +243,16 @@ def call_narrated_mpt(
             _report_mpt_output(line, on_progress)
 
     try:
-        result = run_command(
-            command,
-            cwd=settings.mpt_dir,
-            timeout=3600,
-            retries=2,
-            env={"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
-            on_output=handle_output if on_progress else None,
-        )
-        stdout = result.stdout
+        with _mpt_temporary_environment({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}) as env:
+            result = run_command(
+                command,
+                cwd=settings.mpt_dir,
+                timeout=3600,
+                retries=2,
+                env=env,
+                on_output=handle_output if on_progress else None,
+            )
+            stdout = result.stdout
     except subprocess.TimeoutExpired:
         timed_out = True
 
@@ -239,7 +262,7 @@ def call_narrated_mpt(
         if parsed:
             source_video = parsed
             task_dir = parsed.parent
-            task_manifest = task_dir / "ai-popline-manifest.json"
+            task_manifest = task_dir / "ai-pipeline-manifest.json"
     source_subtitle = task_dir / "subtitle.srt"
     if not source_video.is_file():
         suffix = " after timeout" if timed_out else ""
@@ -248,6 +271,8 @@ def call_narrated_mpt(
         raise ExternalToolError(f"MPT completed but subtitle.srt was not found in {task_dir}")
     if timed_out and not _has_valid_narrated_artifacts(source_video, source_subtitle):
         raise ExternalToolError(f"MPT timed out with incomplete narrated artifacts in {task_dir}")
+    source_video = _guard_generated_video(source_video, settings.mpt_dir)
+    source_subtitle = _guard_generated_subtitle(source_subtitle, task_dir)
 
     if on_progress:
         on_progress(80, "复制视频产物", "视频和字幕已生成，正在复制到任务目录", False)

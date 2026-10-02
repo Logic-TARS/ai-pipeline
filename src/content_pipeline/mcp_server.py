@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from mcp.server import FastMCP
 
+from .api.ui_schema import validate_task_for_ui
 from .models import JobSnapshot, JobStatus, PublishTarget, TaskInput
 from .orchestrator import Orchestrator
 from .photo_process_debug import open_photo_process_debug as open_photo_process_debug_browser
@@ -19,7 +20,28 @@ from .tools.gemini_client import call_gemini_skill
 from .tools.mpt_client import call_mpt
 from .tools.photo_process_client import photo_process_contract
 
-mcp = FastMCP("ai-popline")
+__all__ = [
+    "generate_images",
+    "get_external_tool_contracts",
+    "get_job_events",
+    "get_status",
+    "list_capabilities",
+    "list_jobs",
+    "list_profiles",
+    "main",
+    "open_photo_process_debug",
+    "process_ai_art",
+    "process_ai_art_async",
+    "process_japanese_images",
+    "render_video",
+    "run_finance_video_async",
+    "run_task_async",
+    "run_task_sync",
+    "start_task",
+    "submit_task",
+]
+
+mcp = FastMCP("ai-pipeline")
 
 settings = load_settings()
 orchestrator = Orchestrator(settings=settings)
@@ -49,10 +71,23 @@ def _make_task(
     )
 
 
+def _normalize_task(task: TaskInput) -> TaskInput:
+    if task.content_type is None:
+        return task
+    normalized, _warnings = validate_task_for_ui(task)
+    return normalized
+
+
 def _submit_and_start(task: TaskInput) -> dict[str, str]:
-    task_id = orchestrator.submit(task)
+    task_id = orchestrator.submit(_normalize_task(task))
     executor.submit(orchestrator.run, task_id)
     return {"task_id": task_id, "status": "queued"}
+
+
+def _bounded_limit(value: int, *, maximum: int) -> int:
+    if value < 1:
+        raise ValueError("limit must be a positive integer")
+    return min(value, maximum)
 
 
 @mcp.tool()
@@ -73,7 +108,7 @@ async def submit_task(
         publish_targets=publish_targets,
         params=params or {},
     )
-    task_id = orchestrator.submit(task)
+    task_id = orchestrator.submit(_normalize_task(task))
     return {"task_id": task_id, "status": "queued"}
 
 
@@ -120,14 +155,16 @@ async def get_status(task_id: str) -> dict[str, Any]:
 @mcp.tool()
 async def get_job_events(task_id: str, limit: int = 50) -> dict[str, Any]:
     """Return recent append-only events for a task."""
-    events_path = orchestrator.store.events_path(task_id)
-    if not events_path.is_file():
-        raise ValueError("task not found")
-    events = []
-    for line in events_path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            events.append(json.loads(line))
-    return {"task_id": task_id, "events": events[-limit:]}
+    resolved_limit = _bounded_limit(limit, maximum=500)
+    try:
+        events = orchestrator.store.read_events(task_id, limit=resolved_limit)
+    except FileNotFoundError as exc:
+        raise ValueError("task not found") from exc
+    except OSError as exc:
+        raise ValueError("job events cannot be read") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError("job events are invalid") from exc
+    return {"task_id": task_id, "events": events}
 
 
 @mcp.tool()
@@ -145,6 +182,7 @@ async def list_capabilities() -> dict[str, Any]:
                     "ai_art",
                     "grouped_anime",
                     "japanese",
+                    "script_video",
                 ],
                 "default_publish": False,
                 "notes": "Use run_task_async for long browser, video, or publishing jobs.",
@@ -153,7 +191,7 @@ async def list_capabilities() -> dict[str, Any]:
                 "name": "photo_process_image_folder",
                 "tools": ["process_ai_art_async", "process_ai_art", "process_japanese_images"],
                 "lower_tool": photo_process_contract(settings),
-                "required_params": ["source_dir", "image_prompt"],
+                "required_params": ["source_dir", "process_name"],
                 "safety": "Stage or copy source images before calling Photo-Process when originals must be preserved.",
             },
             {
@@ -161,7 +199,10 @@ async def list_capabilities() -> dict[str, Any]:
                 "tools": ["run_finance_video_async"],
                 "content_type": "finance",
                 "default_publish": False,
-                "publishing": "Only Douyin and Kuaishou private publishing are supported for Finance.",
+                "publishing": (
+                    "Douyin/Kuaishou publishing with selectable visibility and Tencent draft publishing "
+                    "are supported for Finance."
+                ),
             },
         ],
         "status_tools": ["get_status", "get_job_events", "list_jobs"],
@@ -209,7 +250,7 @@ async def run_task_sync(
             publish_targets=publish_targets,
             params=params or {},
         )
-        task_id = orchestrator.submit(task)
+        task_id = orchestrator.submit(_normalize_task(task))
         orchestrator.run(task_id)
         return orchestrator.store.get(task_id).model_dump(mode="json")
     except Exception as exc:
@@ -268,7 +309,7 @@ async def render_video(
 @mcp.tool()
 async def process_ai_art(
     source_dir: str,
-    image_prompt: str,
+    process_name: str,
     title: str,
     source_files: list[str] | None = None,
     archive_dir: str | None = None,
@@ -279,11 +320,13 @@ async def process_ai_art(
     publish: bool = False,
     publish_targets: list[dict[str, Any]] | None = None,
     params: dict[str, Any] | None = None,
+    image_prompt: str = "",
 ) -> dict[str, Any]:
     """Process a folder of images through the AI art pipeline: edit, group, build videos, and optionally publish."""
     try:
         task_params = {
             "source_dir": source_dir,
+            "process_name": process_name,
             "image_prompt": image_prompt,
             "title": title,
             "source_files": source_files or [],
@@ -306,7 +349,7 @@ async def process_ai_art(
             publish_targets=_publish_targets(publish_targets),
             params=task_params,
         )
-        task_id = orchestrator.submit(task)
+        task_id = orchestrator.submit(_normalize_task(task))
         orchestrator.run(task_id)
         return orchestrator.store.get(task_id).model_dump(mode="json")
     except Exception as exc:
@@ -316,7 +359,7 @@ async def process_ai_art(
 @mcp.tool()
 async def process_ai_art_async(
     source_dir: str,
-    image_prompt: str,
+    process_name: str,
     title: str,
     source_files: list[str] | None = None,
     archive_dir: str | None = None,
@@ -327,10 +370,12 @@ async def process_ai_art_async(
     publish: bool = False,
     publish_targets: list[dict[str, Any]] | None = None,
     params: dict[str, Any] | None = None,
+    image_prompt: str = "",
 ) -> dict[str, str]:
     """Submit and start the AI-art Photo-Process folder pipeline asynchronously."""
     task_params = {
         "source_dir": source_dir,
+        "process_name": process_name,
         "image_prompt": image_prompt,
         "title": title,
         "source_files": source_files or [],
@@ -360,6 +405,7 @@ async def process_ai_art_async(
 @mcp.tool()
 async def process_japanese_images(
     source_dir: str,
+    process_name: str = "日语视觉化",
     image_prompt: str = "",
     output_dir: str | None = None,
     source_files: list[str] | None = None,
@@ -369,6 +415,7 @@ async def process_japanese_images(
     """Submit and start the Japanese local image pipeline backed by Photo-Process."""
     params: dict[str, Any] = {
         "source_dir": source_dir,
+        "process_name": process_name,
         "image_prompt": image_prompt,
         "source_files": source_files or [],
         "dry_run": dry_run,
@@ -423,6 +470,7 @@ async def list_profiles() -> list[dict[str, str]]:
 async def list_jobs(limit: int = 10) -> dict[str, Any]:
     """List the most recent job summaries, sorted by creation time descending."""
     try:
+        resolved_limit = _bounded_limit(limit, maximum=200)
         jobs_dir = settings.data_dir / "jobs"
         if not jobs_dir.is_dir():
             return {"jobs": []}
@@ -446,7 +494,7 @@ async def list_jobs(limit: int = 10) -> dict[str, Any]:
             )
 
         results.sort(key=lambda j: j["created_at"], reverse=True)
-        return {"jobs": results[:limit]}
+        return {"jobs": results[:resolved_limit]}
     except Exception as exc:
         return {"status": "failed", "error": str(exc)}
 

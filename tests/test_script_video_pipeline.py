@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from content_pipeline.job_store import JobStore
 from content_pipeline.models import JobStatus, TaskInput
 from content_pipeline.orchestrator import Orchestrator
@@ -49,6 +51,26 @@ def test_script_video_pipeline_generates_guarded_dry_run_artifacts(tmp_path: Pat
     assert str(settings.data_dir) not in events
 
 
+@pytest.mark.parametrize("script", ["短稿内容用于验证建议字数之外仍可完成视频生成。" * 2, "长" * 601])
+def test_script_video_pipeline_dry_run_allows_scripts_outside_recommended_length(tmp_path: Path, script: str) -> None:
+    settings = Settings(data_dir=tmp_path / "output", mpt_dir=tmp_path / "mpt")
+    orchestrator = Orchestrator(settings=settings, store=JobStore(settings.data_dir))
+    task_id = orchestrator.submit(
+        TaskInput(
+            description="区间外口播干运行",
+            content_type="script_video",
+            params={"title": "今日资讯", "script": script, "dry_run": True},
+        )
+    )
+
+    orchestrator.run(task_id)
+
+    snapshot = orchestrator.store.get(task_id)
+    assert snapshot.status == JobStatus.SUCCEEDED
+    assert snapshot.artifacts.narration_script == script
+    assert snapshot.artifacts.video is not None and snapshot.artifacts.video.is_file()
+
+
 def test_script_video_pipeline_rejects_local_file_references(tmp_path: Path) -> None:
     settings = Settings(data_dir=tmp_path / "output", mpt_dir=tmp_path / "mpt")
     orchestrator = Orchestrator(settings=settings, store=JobStore(settings.data_dir))
@@ -65,3 +87,89 @@ def test_script_video_pipeline_rejects_local_file_references(tmp_path: Path) -> 
     snapshot = orchestrator.store.get(task_id)
     assert snapshot.status == JobStatus.FAILED
     assert "local file reference" in (snapshot.error or "")
+
+
+def test_script_video_pipeline_defaults_to_tencent_publish(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = Settings(data_dir=tmp_path / "output", mpt_dir=tmp_path / "mpt")
+    used_targets: list[str] = []
+
+    def fake_upload(*, target, **kwargs):
+        used_targets.append(target.platform)
+        if target.platform == "tencent":
+            return {"success": True, "delivery_status": "draft", "visibility": "draft"}
+        return {"success": True, "visibility": "private"}
+
+    monkeypatch.setattr("content_pipeline.publishing.call_sau_target", fake_upload)
+    orchestrator = Orchestrator(settings=settings, store=JobStore(settings.data_dir))
+    task_id = orchestrator.submit(
+        TaskInput(
+            description="发布口播视频",
+            content_type="script_video",
+            publish=True,
+            params={"title": "今日金融资讯", "script": _script(), "dry_run": True},
+        )
+    )
+
+    orchestrator.run(task_id)
+
+    snapshot = orchestrator.store.get(task_id)
+    assert snapshot.status == JobStatus.SUCCEEDED
+    assert used_targets == ["douyin", "kuaishou", "tencent"]
+    assert snapshot.artifacts.publish_results["tencent"] == {
+        "success": True,
+        "delivery_status": "draft",
+        "visibility": "draft",
+    }
+
+
+def _run_script_video_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, publish_targets: list[dict[str, object]]
+):
+    settings = Settings(data_dir=tmp_path / "output", mpt_dir=tmp_path / "mpt")
+
+    def fake_upload(*, target, **kwargs):
+        return {"success": True, "visibility": target.visibility}
+
+    monkeypatch.setattr("content_pipeline.publishing.call_sau_target", fake_upload)
+    orchestrator = Orchestrator(settings=settings, store=JobStore(settings.data_dir))
+    task_id = orchestrator.submit(
+        TaskInput(
+            description="发布口播视频",
+            content_type="script_video",
+            publish=True,
+            publish_targets=publish_targets,
+            params={"title": "今日金融资讯", "script": _script(), "dry_run": True},
+        )
+    )
+
+    orchestrator.run(task_id)
+    return orchestrator.store.get(task_id)
+
+
+def test_script_video_pipeline_aggregates_public_visibility(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    snapshot = _run_script_video_publish(
+        tmp_path,
+        monkeypatch,
+        [
+            {"platform": "douyin", "account": "金融破壁人", "visibility": "public"},
+            {"platform": "kuaishou", "account": "破壁人", "visibility": "public"},
+        ],
+    )
+
+    assert snapshot.status == JobStatus.SUCCEEDED
+    assert snapshot.artifacts.publish_results["douyin"]["visibility"] == "public"
+    assert snapshot.artifacts.upload_result["visibility"] == "public"
+
+
+def test_script_video_pipeline_aggregates_mixed_visibility(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    snapshot = _run_script_video_publish(
+        tmp_path,
+        monkeypatch,
+        [
+            {"platform": "douyin", "account": "金融破壁人", "visibility": "public"},
+            {"platform": "kuaishou", "account": "破壁人"},
+        ],
+    )
+
+    assert snapshot.status == JobStatus.SUCCEEDED
+    assert snapshot.artifacts.upload_result["visibility"] == "mixed"

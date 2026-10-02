@@ -4,11 +4,39 @@ import queue
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from os import environ
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from uuid import NAMESPACE_URL, uuid5
 
 from content_pipeline.errors import ExternalToolError
+
+__all__ = ["mpt_task_id", "run_command"]
+
+
+def mpt_task_id(task_name: str) -> str:
+    """Map an AI Pipeline logical task name to a deterministic UUID.
+
+    MoneyPrinterTurbo's cli.py only accepts UUID task ids, so logical names
+    like ``content-<job>`` are hashed into a stable UUID per task name.
+    """
+    return str(uuid5(NAMESPACE_URL, f"https://ai-pipeline.local/mpt-tasks/{task_name}"))
+
+
+def _legacy_mpt_task_id(task_name: str) -> str:
+    return str(uuid5(NAMESPACE_URL, f"https://ai-popline.local/mpt-tasks/{task_name}"))
+
+
+@contextmanager
+def _mpt_temporary_environment(extra_env: Mapping[str, str] | None = None) -> Iterator[dict[str, str]]:
+    with TemporaryDirectory(prefix="ai-pipeline-mpt-", ignore_cleanup_errors=True) as temporary_directory:
+        environment = dict(environ)
+        environment.update(extra_env or {})
+        environment.update(dict.fromkeys(("TEMP", "TMP", "TMPDIR"), temporary_directory))
+        yield environment
+
 
 NETWORK_RETRY_MARKERS = (
     "timeout",

@@ -5,6 +5,8 @@ from pathlib import Path
 from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+__all__ = ["Settings", "load_settings"]
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -28,6 +30,10 @@ class Settings(BaseSettings):
         default=Path("config/pipeline.defaults.yaml"),
         validation_alias=AliasChoices("PIPELINE_DEFAULTS_FILE", "PIPELINE_CONFIG_FILE"),
     )
+    publish_defaults_file: Path = Field(
+        default=Path("config/publish.defaults.yaml"),
+        validation_alias=AliasChoices("PUBLISH_DEFAULTS_FILE", "PUBLISH_POLICY_FILE"),
+    )
 
     # Gemini
     gemini_skill_dir: Path = Path(r"G:\Job\gemini-skill")
@@ -40,6 +46,10 @@ class Settings(BaseSettings):
     # Empty keeps the legacy one-shot CLI adapter for backwards compatibility.
     photo_process_worker_url: str = ""
 
+    # Cover-Forge localhost sidecar
+    cover_forge_url: str = "http://127.0.0.1:3000"
+    cover_forge_timeout_seconds: int = Field(default=60, ge=5, le=300)
+
     # MoneyPrinterTurbo
     mpt_dir: Path = Path(r"G:\Job\MoneyPrinterTurbo")
     mpt_python: Path = Path(r"G:\Job\MoneyPrinterTurbo\.venv\Scripts\python.exe")
@@ -49,6 +59,9 @@ class Settings(BaseSettings):
     sau_dir: Path = Path(r"G:\Job\social-auto-upload")
     sau_exe: Path = Path(r"G:\Job\social-auto-upload\.venv\Scripts\sau.exe")
     sau_bilibili_private_args: str = ""
+    # SAU 账号中心 Bridge（server/bridge_server.py），用于发布账号下拉选项
+    sau_bridge_url: str = "http://127.0.0.1:5800"
+    sau_bridge_token: SecretStr = SecretStr("")
 
     # Finance / AI Briefing / content research
     finance_md_dir: Path = Path(r"G:\Job\Automation-Output\sajin\fund-daily")
@@ -56,7 +69,13 @@ class Settings(BaseSettings):
     ttskill_command: str = "ttskill"
     ttskill_timeout_seconds: int = Field(default=120, ge=10, le=600)
 
-    # Router LLM (optional — keyword fallback when absent)
+    # Script writing LLM. Empty values inherit the Router LLM settings.
+    script_llm_base_url: str = ""
+    script_llm_api_key: str = ""
+    script_llm_model: str = ""
+    script_llm_timeout_seconds: int = Field(default=120, ge=5, le=600)
+
+    # Router LLM (optional — keyword fallback when absent).
     router_llm_base_url: str = ""
     router_llm_api_key: str = ""
     router_llm_model: str = ""
@@ -73,7 +92,7 @@ class Settings(BaseSettings):
     web_session_secret: SecretStr = SecretStr("")
     web_session_ttl_seconds: int = Field(default=604800, ge=300, le=604800)
     web_publish_enabled: bool = False
-    web_publish_reauth_seconds: int = Field(default=300, ge=60, le=3600)
+    web_publish_reauth_seconds: int = Field(default=604800, ge=60, le=604800)
     web_tls_certfile: Path | None = None
     web_tls_keyfile: Path | None = None
     web_allow_zerotier_http: bool = False

@@ -13,6 +13,14 @@ from content_pipeline.models import AdapterResult, ErrorCode
 from content_pipeline.settings import Settings
 from content_pipeline.tools.common import run_command
 
+__all__ = [
+    "SOURCE_IMAGE_SUFFIXES",
+    "archive_source",
+    "photo_process_contract",
+    "run_photo_process_adapter",
+    "scan_source_images",
+]
+
 SOURCE_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 
 
@@ -30,8 +38,9 @@ def photo_process_contract(settings: Settings) -> dict[str, object]:
             "comic",
             "--image",
             "<image>",
-            "--prompt",
-            "<prompt>",
+            "--process-name",
+            "<process_name>",
+            "--preserve-source",
             "--json",
         ],
         "timeout_seconds": 900,
@@ -140,17 +149,17 @@ def scan_source_images(source_dir: Path, source_files: list[str] | None = None) 
 def call_photo_process(
     *,
     source: Path,
-    prompt: str,
     output_path: Path,
     settings: Settings,
+    prompt: str = "",
     target_gem_name: str | None = None,
     target_gem_url: str | None = None,
 ) -> Path:
     result = run_photo_process_adapter(
         source=source,
-        prompt=prompt,
         output_path=output_path,
         settings=settings,
+        prompt=prompt,
         target_gem_name=target_gem_name,
         target_gem_url=target_gem_url,
     )
@@ -165,14 +174,14 @@ def call_photo_process(
 def run_photo_process_adapter(
     *,
     source: Path,
-    prompt: str,
     output_path: Path,
     settings: Settings,
+    prompt: str = "",
     target_gem_name: str | None = None,
     target_gem_url: str | None = None,
 ) -> AdapterResult:
     for existing in sorted(output_path.parent.glob(f"{output_path.stem}.*")) if output_path.parent.exists() else []:
-        if existing.suffix.lower() in SOURCE_IMAGE_SUFFIXES and existing.is_file():
+        if existing.suffix.lower() in SOURCE_IMAGE_SUFFIXES and existing.is_file() and not existing.is_symlink():
             try:
                 validation = validate_images([existing], 1)
             except Exception as exc:
@@ -207,14 +216,14 @@ def run_photo_process_adapter(
         "comic",
         "--image",
         str(source.resolve()),
-        "--prompt",
-        prompt,
     ]
     if target_gem_name:
-        command.extend(["--target-gem-name", target_gem_name])
+        command.extend(["--process-name", target_gem_name])
+    if prompt:
+        command.extend(["--prompt", prompt])
     if target_gem_url:
         command.extend(["--target-gem-url", target_gem_url])
-    command.append("--json")
+    command.extend(["--preserve-source", "--json"])
     evidence = {
         "command": command,
         "cwd": str(settings.photo_process_dir),
@@ -285,7 +294,7 @@ def run_photo_process_adapter(
         )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     target = output_path.with_suffix(generated.suffix.lower())
-    shutil.copy2(generated, target)
+    _copy_generated_image(generated, target)
     try:
         validation = validate_images([target], 1)
     except Exception as exc:
@@ -309,11 +318,11 @@ def run_photo_process_adapter(
 def _run_photo_process_worker_adapter(
     *,
     source: Path,
-    prompt: str,
     output_path: Path,
     settings: Settings,
     target_gem_name: str | None,
     target_gem_url: str | None,
+    prompt: str = "",
 ) -> AdapterResult:
     worker_url = settings.photo_process_worker_url.rstrip("/")
     endpoint = f"{worker_url}/api/comic"
@@ -327,8 +336,10 @@ def _run_photo_process_worker_adapter(
         {
             "image_path": str(source.resolve()),
             "prompt": prompt,
+            "process_name": target_gem_name,
             "target_gem_name": target_gem_name,
             "target_gem_url": target_gem_url,
+            "archive_source": False,
         },
         ensure_ascii=False,
     ).encode("utf-8")
@@ -378,7 +389,7 @@ def _run_photo_process_worker_adapter(
         )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     target = output_path.with_suffix(generated.suffix.lower())
-    shutil.copy2(generated, target)
+    _copy_generated_image(generated, target)
     try:
         validation = validate_images([target], 1)
     except Exception as exc:
@@ -409,6 +420,12 @@ def archive_source(source: Path, archive_dir: Path) -> Path:
         target = archive_dir / f"{source.stem}_{counter}{source.suffix}"
         counter += 1
     return Path(shutil.move(str(source), str(target)))
+
+
+def _copy_generated_image(source: Path, target: Path) -> None:
+    if target.is_symlink():
+        raise ExternalToolError(f"refusing to overwrite symlinked Photo-Process target: {target}")
+    shutil.copy2(source, target)
 
 
 def _parse_json_result(stdout: str) -> dict:
@@ -443,7 +460,7 @@ def _success(
         "height": first_file.height,
     }
     if payload:
-        for key in ("target_aspect_ratio", "source_done_path"):
+        for key in ("target_aspect_ratio", "source_done_path", "source_was_moved"):
             if payload.get(key) is not None:
                 artifacts[key] = payload[key]
     return AdapterResult(

@@ -6,6 +6,7 @@
   "params": {
     "source_dir": "G:\\Job\\Photo-Datasets\\input",
     "output_dir": "G:\\Job\\Photo-Datasets\\jap-output",
+    "process_name": "日语视觉化",
     "target_gem_url": "https://gemini.google.com/gem/f306c82a8105",
     "image_prompt": ""
   }

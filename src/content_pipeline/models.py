@@ -6,7 +6,40 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+__all__ = [
+    "AdapterResult",
+    "AiArtGroupArtifact",
+    "AiArtParams",
+    "AiArtSourceResult",
+    "AiBriefingParams",
+    "ArtifactSet",
+    "ContentType",
+    "CoverParams",
+    "DeferredPublishInput",
+    "ErrorCode",
+    "FinanceParams",
+    "GroupedAnimeParams",
+    "ImageFileValidation",
+    "ImageValidation",
+    "JapaneseParams",
+    "JobProgress",
+    "JobSnapshot",
+    "JobStatus",
+    "MediaValidation",
+    "PipelineStep",
+    "PublicationAttempt",
+    "PublicationStatus",
+    "PublishTarget",
+    "RouteResult",
+    "ScriptVideoParams",
+    "TaskInput",
+    "VideoValidation",
+    "XhsImageNoteParams",
+    "deferred_publish_fingerprint",
+    "task_fingerprint",
+]
 
 ContentType = Literal[
     "anime",
@@ -19,6 +52,45 @@ ContentType = Literal[
     "script_video",
     "unknown",
 ]
+
+
+def _normalize_required_text(value: str, field_name: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{field_name} cannot be blank")
+    return normalized
+
+
+def _normalize_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return value.strip() or None
+
+
+def _normalize_tags(values: list[str], *, error_prefix: str = "tags") -> list[str]:
+    normalized_tags: list[str] = []
+    for value in values:
+        tag = value.strip().lstrip("#")
+        if not tag:
+            continue
+        if len(tag) > 30:
+            raise ValueError(f"{error_prefix} cannot exceed 30 characters")
+        if tag not in normalized_tags:
+            normalized_tags.append(tag)
+    return normalized_tags
+
+
+def _normalize_source_files(values: list[str]) -> list[str]:
+    normalized_files: list[str] = []
+    for value in values:
+        filename = value.strip()
+        if not filename:
+            continue
+        if Path(filename).name != filename:
+            raise ValueError("source_files entries must be plain filenames")
+        if filename not in normalized_files:
+            normalized_files.append(filename)
+    return normalized_files
 
 
 class PipelineStep(StrEnum):
@@ -61,19 +133,29 @@ class ErrorCode(StrEnum):
 
 
 class AdapterResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     ok: bool
-    tool: str
+    tool: str = Field(min_length=1, max_length=120)
     code: ErrorCode
-    message: str | None = None
+    message: str | None = Field(default=None, max_length=2000)
     artifacts: dict[str, Any] = Field(default_factory=dict)
     evidence: dict[str, Any] = Field(default_factory=dict)
     raw: dict[str, Any] = Field(default_factory=dict)
 
 
 class PublishTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     platform: Literal["douyin", "kuaishou", "bilibili", "tencent", "xiaohongshu"]
-    account: str = Field(min_length=1)
-    tid: int | None = None
+    account: str = Field(min_length=1, max_length=120)
+    tid: int | None = Field(default=None, ge=1)
+    visibility: Literal["private", "public"] = "private"
+
+    @field_validator("account")
+    @classmethod
+    def normalize_account(cls, value: str) -> str:
+        return _normalize_required_text(value, "account")
 
     @model_validator(mode="after")
     def require_bilibili_tid(self) -> PublishTarget:
@@ -83,18 +165,44 @@ class PublishTarget(BaseModel):
 
 
 class TaskInput(BaseModel):
-    description: str
+    model_config = ConfigDict(extra="forbid")
+
+    description: str = Field(min_length=1, max_length=500)
     content_type: ContentType | None = None
-    topic: str | None = None
-    publish: bool = False
-    publish_targets: list[PublishTarget] = Field(default_factory=list)
+    topic: str | None = Field(default=None, max_length=200)
+    publish: bool | None = None
+    publish_targets: list[PublishTarget] = Field(default_factory=list, max_length=4)
     params: dict[str, Any] = Field(default_factory=dict)
     origin: Literal["content_studio"] | None = None
     source_draft_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
     source_draft_revision: int | None = Field(default=None, ge=1)
 
+    @field_validator("description")
+    @classmethod
+    def normalize_description(cls, value: str) -> str:
+        return _normalize_required_text(value, "description")
+
+    @field_validator("topic")
+    @classmethod
+    def normalize_topic(cls, value: str | None) -> str | None:
+        return _normalize_optional_text(value)
+
+    @model_validator(mode="after")
+    def validate_task_consistency(self) -> TaskInput:
+        platforms = [target.platform for target in self.publish_targets]
+        if len(platforms) != len(set(platforms)):
+            raise ValueError("each publish platform can appear only once")
+        has_draft_reference = self.source_draft_id is not None or self.source_draft_revision is not None
+        if has_draft_reference and self.origin != "content_studio":
+            raise ValueError("source draft fields require origin='content_studio'")
+        if self.origin == "content_studio" and (self.source_draft_id is None) != (self.source_draft_revision is None):
+            raise ValueError("source_draft_id and source_draft_revision must be provided together")
+        return self
+
 
 class DeferredPublishInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     publish_targets: list[PublishTarget] = Field(min_length=1, max_length=4)
     title: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=2000)
@@ -105,18 +213,9 @@ class DeferredPublishInput(BaseModel):
         platforms = [target.platform for target in self.publish_targets]
         if len(platforms) != len(set(platforms)):
             raise ValueError("each publish platform can appear only once")
-        self.title = self.title.strip()
+        self.title = _normalize_required_text(self.title, "publish title")
         self.description = self.description.strip()
-        normalized_tags: list[str] = []
-        for value in self.tags:
-            tag = value.strip().lstrip("#")
-            if not tag:
-                continue
-            if len(tag) > 30:
-                raise ValueError("publish tags cannot exceed 30 characters")
-            if tag not in normalized_tags:
-                normalized_tags.append(tag)
-        self.tags = normalized_tags
+        self.tags = _normalize_tags(self.tags, error_prefix="publish tags")
         return self
 
 
@@ -124,56 +223,102 @@ PublicationStatus = Literal["queued", "running", "succeeded", "partial", "failed
 
 
 class PublicationAttempt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     attempt_id: str = Field(pattern=r"^[0-9a-f]{32}$")
     status: PublicationStatus = "queued"
     request: DeferredPublishInput
     video_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    requested_at: str
-    started_at: str | None = None
-    finished_at: str | None = None
+    requested_at: str = Field(max_length=80)
+    started_at: str | None = Field(default=None, max_length=80)
+    finished_at: str | None = Field(default=None, max_length=80)
     results: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    error: str | None = None
+    error: str | None = Field(default=None, max_length=2000)
 
 
 class AiArtParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     source_dir: Path
     source_files: list[str] = Field(default_factory=list)
     archive_dir: Path | None = None
     failed_dir: Path | None = None
-    image_prompt: str = Field(min_length=1)
+    process_name: str = Field(min_length=1)
+    # Photo-Process owns the real prompt for each process name. This optional
+    # field remains only for legacy callers that still send extra text.
+    image_prompt: str = ""
     title: str = Field(min_length=1)
     description: str = ""
     tags: list[str] = Field(default_factory=list)
     group_size: int = Field(default=4, ge=1, le=20)
 
+    @field_validator("source_files")
+    @classmethod
+    def normalize_source_files(cls, value: list[str]) -> list[str]:
+        return _normalize_source_files(value)
+
+    @field_validator("process_name", "title")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        return _normalize_required_text(value, "field")
+
+    @model_validator(mode="after")
+    def normalize_publish_fields(self) -> AiArtParams:
+        self.description = self.description.strip()
+        self.tags = _normalize_tags(self.tags)
+        return self
+
 
 class XhsImageNoteParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     source_dir: Path
     source_files: list[str] = Field(default_factory=list)
     archive_dir: Path | None = None
     failed_dir: Path | None = None
-    image_prompt: str = Field(min_length=1)
-    title: str = Field(min_length=1)
-    note: str = ""
-    tags: list[str] = Field(default_factory=list)
-    schedule: str | None = None
-    debug: bool = False
-    headed: bool = False
-    dry_run: bool = False
+    process_name: str = Field(min_length=1)
+    # Photo-Process owns the real prompt for each process name. This optional
+    # field remains only for legacy callers that still send extra text.
+    image_prompt: str = ""
+
+    @field_validator("source_files")
+    @classmethod
+    def normalize_source_files(cls, value: list[str]) -> list[str]:
+        return _normalize_source_files(value)
+
+    @field_validator("process_name")
+    @classmethod
+    def normalize_process_name(cls, value: str) -> str:
+        return _normalize_required_text(value, "process_name")
 
 
 class JapaneseParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     source_dir: Path
     output_dir: Path | None = None
     source_files: list[str] = Field(default_factory=list)
-    # The current 日语视觉化 Gem is image-only: upload the image and submit
+    process_name: str = "日语视觉化"
+    # The current 日语视觉化 process is image-only: upload the image and submit
     # without typing extra prompt text unless a caller explicitly supplies one.
     image_prompt: str = ""
     target_gem_url: str | None = None
     dry_run: bool = False
 
+    @field_validator("source_files")
+    @classmethod
+    def normalize_source_files(cls, value: list[str]) -> list[str]:
+        return _normalize_source_files(value)
+
+    @field_validator("process_name")
+    @classmethod
+    def normalize_process_name(cls, value: str) -> str:
+        return _normalize_required_text(value, "process_name")
+
 
 class GroupedAnimeParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     source_dir: Path
     source_files: list[str] = Field(default_factory=list)
     archive_dir: Path | None = None
@@ -184,27 +329,67 @@ class GroupedAnimeParams(BaseModel):
     group_size: int = Field(default=4, ge=1, le=20)
     seconds_per_image: int = Field(default=5, ge=1, le=60)
 
+    @field_validator("source_files")
+    @classmethod
+    def normalize_source_files(cls, value: list[str]) -> list[str]:
+        return _normalize_source_files(value)
+
+    @model_validator(mode="after")
+    def normalize_text_fields(self) -> GroupedAnimeParams:
+        self.title = _normalize_optional_text(self.title)
+        self.description = self.description.strip()
+        self.tags = _normalize_tags(self.tags)
+        return self
+
 
 class FinanceParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     source_dir: Path | None = None
     date: str = "auto"
     script_mode: Literal["90_seconds"] = "90_seconds"
+    script_writer: Literal["rule", "llm"] = "rule"
+    script_failure_policy: Literal["fail", "validated_rule_fallback"] = "fail"
+    script_repair_attempts: int = Field(default=1, ge=0, le=2)
     douyin_account: str = "金融破壁人"
-    kuaishou_account: str = "破壁人"
+    kuaishou_account: str = "搞AI的罗辑同学"
+    tencent_account: str = "每日金融摘要"
     title: str | None = None
     description: str = "每日基金日报，仅供参考，不构成投资建议"
     tags: list[str] = Field(default_factory=lambda: ["基金", "A股", "投资"])
     dry_run: bool = False
 
+    @model_validator(mode="after")
+    def normalize_text_fields(self) -> FinanceParams:
+        self.douyin_account = _normalize_required_text(self.douyin_account, "publish account")
+        self.kuaishou_account = _normalize_required_text(self.kuaishou_account, "publish account")
+        self.tencent_account = _normalize_required_text(self.tencent_account, "publish account")
+        self.title = _normalize_optional_text(self.title)
+        self.description = self.description.strip()
+        self.tags = _normalize_tags(self.tags)
+        return self
+
 
 class AiBriefingParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     source_dir: Path | None = None
     date: str = "auto"
     script_mode: Literal["90_seconds"] = "90_seconds"
+    script_writer: Literal["rule", "llm"] = "rule"
+    script_failure_policy: Literal["fail", "validated_rule_fallback"] = "fail"
+    script_repair_attempts: int = Field(default=1, ge=0, le=2)
     handoff_wait_seconds: int = Field(default=600, ge=0, le=3600)
+    cover_size: Literal["landscape", "portrait", "story"] = "story"
+    cover_template: Literal["default", "ai-poster"] = "ai-poster"
+    cover_title_position: Literal["left", "center"] = "center"
+    cover_background_image: Path | None = None
+    cover_background_scale: float = Field(default=1.0, ge=0.25, le=3.0)
+    cover_background_position_x: float = Field(default=50.0, ge=0.0, le=100.0)
+    cover_background_position_y: float = Field(default=50.0, ge=0.0, le=100.0)
     douyin_account: str = "金融破壁人"
-    kuaishou_account: str = "破壁人"
-    tencent_account: str | None = None
+    kuaishou_account: str = "搞AI的罗辑同学"
+    tencent_account: str = "每日金融摘要"
     title: str | None = None
     description: str = "今日AI简报"
     tags: list[str] = Field(default_factory=lambda: ["AI", "人工智能", "科技"])
@@ -212,92 +397,172 @@ class AiBriefingParams(BaseModel):
     force_regenerate: bool = False
     voice_rate: float | None = Field(default=None, ge=0.55, le=1.2)
 
+    @model_validator(mode="after")
+    def normalize_text_fields(self) -> AiBriefingParams:
+        self.douyin_account = _normalize_required_text(self.douyin_account, "publish account")
+        self.kuaishou_account = _normalize_required_text(self.kuaishou_account, "publish account")
+        self.tencent_account = _normalize_required_text(self.tencent_account, "publish account")
+        self.title = _normalize_optional_text(self.title)
+        self.description = self.description.strip()
+        self.tags = _normalize_tags(self.tags)
+        return self
+
 
 class ScriptVideoParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: str = Field(min_length=1, max_length=120)
-    script: str = Field(min_length=350, max_length=500)
+    script: str = Field(min_length=1, max_length=1200)
     description: str = ""
     tags: list[str] = Field(default_factory=list)
     douyin_account: str = "金融破壁人"
-    kuaishou_account: str = "破壁人"
+    kuaishou_account: str = "搞AI的罗辑同学"
+    tencent_account: str = "每日金融摘要"
     dry_run: bool = False
     force_regenerate: bool = False
     voice_rate: float | None = Field(default=None, ge=0.55, le=1.2)
 
+    @field_validator("title")
+    @classmethod
+    def normalize_title(cls, value: str) -> str:
+        return _normalize_required_text(value, "title")
+
+    @field_validator("script")
+    @classmethod
+    def script_must_have_content(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("script cannot be blank")
+        return value
+
+    @model_validator(mode="after")
+    def normalize_publish_fields(self) -> ScriptVideoParams:
+        self.description = self.description.strip()
+        self.tags = _normalize_tags(self.tags)
+        self.douyin_account = _normalize_required_text(self.douyin_account, "publish account")
+        self.kuaishou_account = _normalize_required_text(self.kuaishou_account, "publish account")
+        self.tencent_account = _normalize_required_text(self.tencent_account, "publish account")
+        return self
+
+
+class CoverParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=80)
+    size: Literal["landscape", "portrait", "story"] = "landscape"
+    template: Literal["default", "ai-poster"] = "default"
+    title_position: Literal["left", "center"] = "left"
+    background_image: Path | None = None
+    background_scale: float = Field(default=1.0, ge=0.25, le=3.0)
+    background_position_x: float = Field(default=50.0, ge=0.0, le=100.0)
+    background_position_y: float = Field(default=50.0, ge=0.0, le=100.0)
+
+    @field_validator("title")
+    @classmethod
+    def normalize_title(cls, value: str) -> str:
+        return _normalize_required_text(value, "title")
+
 
 class RouteResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     content_type: ContentType
-    topic: str
+    topic: str = Field(min_length=1, max_length=500)
     params: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("topic")
+    @classmethod
+    def normalize_topic(cls, value: str) -> str:
+        return _normalize_required_text(value, "route topic")
 
 
 class ImageFileValidation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     path: Path
-    format: str
-    width: int
-    height: int
+    format: str = Field(min_length=1, max_length=40)
+    width: int = Field(ge=1)
+    height: int = Field(ge=1)
 
 
 class ImageValidation(BaseModel):
-    count: int
-    files: list[ImageFileValidation]
+    model_config = ConfigDict(extra="forbid")
+
+    count: int = Field(ge=0)
+    files: list[ImageFileValidation] = Field(max_length=100)
 
 
 class VideoValidation(BaseModel):
-    duration_seconds: float
-    width: int
-    height: int
-    aspect_ratio: float
-    video_codec: str
-    audio_codec: str | None = None
-    decoded_video_frames: int
-    decoded_audio_frames: int
+    model_config = ConfigDict(extra="forbid")
+
+    duration_seconds: float = Field(ge=0)
+    width: int = Field(ge=1)
+    height: int = Field(ge=1)
+    aspect_ratio: float = Field(gt=0)
+    video_codec: str = Field(min_length=1, max_length=80)
+    audio_codec: str | None = Field(default=None, max_length=80)
+    decoded_video_frames: int = Field(ge=0)
+    decoded_audio_frames: int = Field(ge=0)
 
 
 class MediaValidation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     images: ImageValidation | None = None
     video: VideoValidation | None = None
 
 
 class JobProgress(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     percent: int = Field(ge=0, le=100)
     phase: str = Field(min_length=1, max_length=120)
     message: str = Field(min_length=1, max_length=500)
-    updated_at: str
+    updated_at: str = Field(max_length=80)
     is_estimate: bool = False
 
 
 class AiArtSourceResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     source_path: Path
     processed_path: Path | None = None
     archived_path: Path | None = None
     failed_path: Path | None = None
     adapter_result: AdapterResult | None = None
-    error: str | None = None
+    error: str | None = Field(default=None, max_length=2000)
 
 
 class AiArtGroupArtifact(BaseModel):
-    index: int
-    source_images: list[Path] = Field(default_factory=list)
-    processed_images: list[Path] = Field(default_factory=list)
+    model_config = ConfigDict(extra="forbid")
+
+    index: int = Field(ge=0)
+    source_images: list[Path] = Field(default_factory=list, max_length=100)
+    processed_images: list[Path] = Field(default_factory=list, max_length=100)
     bgm: Path | None = None
     mpt_task_dir: Path | None = None
     video: Path | None = None
     validation: VideoValidation | None = None
     publish_results: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    error: str | None = None
+    error: str | None = Field(default=None, max_length=2000)
 
 
 class ArtifactSet(BaseModel):
-    images: list[Path] = Field(default_factory=list)
+    model_config = ConfigDict(extra="forbid")
+
+    images: list[Path] = Field(default_factory=list, max_length=100)
     video: Path | None = None
     upload_result: dict[str, Any] | None = None
     validation: MediaValidation = Field(default_factory=MediaValidation)
-    source_results: list[AiArtSourceResult] = Field(default_factory=list)
-    groups: list[AiArtGroupArtifact] = Field(default_factory=list)
+    source_results: list[AiArtSourceResult] = Field(default_factory=list, max_length=100)
+    groups: list[AiArtGroupArtifact] = Field(default_factory=list, max_length=100)
     source_document: Path | None = None
-    narration_script: str | None = None
+    narration_script: str | None = Field(default=None, max_length=4000)
     script_path: Path | None = None
+    script_generation_audit: dict[str, Any] | None = None
+    script_audit_path: Path | None = None
+    script_plan_path: Path | None = None
+    script_attempts_path: Path | None = None
+    script_quality_report_path: Path | None = None
     subtitle: Path | None = None
     mpt_task_dir: Path | None = None
     handoff_path: Path | None = None
@@ -307,21 +572,23 @@ class ArtifactSet(BaseModel):
 
 
 class JobSnapshot(BaseModel):
-    task_id: str
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str = Field(pattern=r"^[0-9a-f]{32}$")
     status: JobStatus
     display_name: str | None = Field(default=None, min_length=1, max_length=120)
-    store_version: int = 1
-    created_at: str | None = None
-    updated_at: str | None = None
-    started_at: str | None = None
-    finished_at: str | None = None
+    store_version: int = Field(default=1, ge=1)
+    created_at: str | None = Field(default=None, max_length=80)
+    updated_at: str | None = Field(default=None, max_length=80)
+    started_at: str | None = Field(default=None, max_length=80)
+    finished_at: str | None = Field(default=None, max_length=80)
     current_step: PipelineStep | None = None
     progress: JobProgress | None = None
     task: TaskInput
     route: RouteResult | None = None
     artifacts: ArtifactSet = Field(default_factory=ArtifactSet)
-    publication_attempts: list[PublicationAttempt] = Field(default_factory=list)
-    error: str | None = None
+    publication_attempts: list[PublicationAttempt] = Field(default_factory=list, max_length=20)
+    error: str | None = Field(default=None, max_length=2000)
 
 
 def deferred_publish_fingerprint(task_id: str, video_sha256: str, request: DeferredPublishInput) -> str:

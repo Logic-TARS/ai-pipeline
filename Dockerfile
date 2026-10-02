@@ -6,13 +6,17 @@ RUN useradd --create-home --shell /bin/bash appuser
 WORKDIR /app
 
 # Copy application metadata and source before installing the package.
-COPY pyproject.toml ./
+COPY pyproject.toml README.md ./
 COPY src ./src
+COPY config ./config
 COPY profiles ./profiles
 COPY app.py ./
 
 # Install dependencies and the src-layout package.
 RUN pip install --no-cache-dir .
+
+# Prepare writable runtime storage before dropping privileges.
+RUN mkdir -p /data && chown appuser:appuser /data
 
 # Switch to non-root
 USER appuser
@@ -24,4 +28,4 @@ HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')" || exit 1
 
 # The container listener is internal; docker-compose publishes it on host loopback only.
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080", "--no-proxy-headers", "--no-server-header"]
+CMD ["ai-pipeline", "serve", "--host", "0.0.0.0", "--port", "8080", "--allow-container-wildcard"]

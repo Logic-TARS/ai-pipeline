@@ -27,3 +27,15 @@ from .registry import (  # noqa: F401
     list_pipelines,
     register,
 )
+
+__all__ = [
+    "PIPELINE_METADATA",
+    "PIPELINE_REGISTRY",
+    "PipelineContext",
+    "PipelineFunc",
+    "PipelineMeta",
+    "get_pipeline",
+    "get_pipeline_meta",
+    "list_pipelines",
+    "register",
+]

@@ -4,10 +4,22 @@ import argparse
 import json
 import sys
 
+from pydantic import ValidationError
+
 from .job_store import JobStore
 from .models import PublishTarget, TaskInput
 from .orchestrator import Orchestrator
 from .settings import load_settings
+from .task_validation import validate_task_params
+
+__all__ = ["main"]
+
+
+def _handoff_wait_seconds(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0 or parsed > 3600:
+        raise argparse.ArgumentTypeError("must be between 0 and 3600 seconds")
+    return parsed
 
 
 def main() -> int:
@@ -23,7 +35,7 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--force-mpt", "--force-regenerate", dest="force_regenerate", action="store_true")
     parser.add_argument("--force-publish", action="store_true")
-    parser.add_argument("--handoff-wait-seconds", type=int, default=600)
+    parser.add_argument("--handoff-wait-seconds", type=_handoff_wait_seconds, default=600)
     args = parser.parse_args()
     if args.publish and args.skip_publish:
         parser.error("--publish and --skip-publish cannot be used together")
@@ -34,7 +46,8 @@ def main() -> int:
     targets = (
         [
             PublishTarget(platform="douyin", account="金融破壁人"),
-            PublishTarget(platform="kuaishou", account="破壁人"),
+            PublishTarget(platform="kuaishou", account="搞AI的罗辑同学"),
+            PublishTarget(platform="tencent", account="每日金融摘要"),
         ]
         if publish
         else []
@@ -52,6 +65,11 @@ def main() -> int:
             "force_regenerate": args.force_regenerate,
         },
     )
+    try:
+        task = validate_task_params(task)
+    except (ValidationError, ValueError) as exc:
+        raise SystemExit(f"invalid ai briefing task: {exc}") from exc
+
     settings = load_settings()
     orchestrator = Orchestrator(settings=settings, store=JobStore(settings.data_dir))
     task_id = orchestrator.submit(task)

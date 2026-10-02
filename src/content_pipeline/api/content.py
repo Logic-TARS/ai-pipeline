@@ -3,8 +3,8 @@ from __future__ import annotations
 from concurrent.futures import Executor
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Path
-from pydantic import BaseModel, Field, field_validator
+from fastapi import APIRouter, HTTPException, Path, Query
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from content_pipeline.content_studio.models import (
     CreateDraftInput,
@@ -13,21 +13,30 @@ from content_pipeline.content_studio.models import (
     UpdateDraftInput,
 )
 from content_pipeline.content_studio.service import ContentStudioService
-from content_pipeline.content_studio.store import DraftConflictError, DraftNotFoundError
+from content_pipeline.content_studio.store import DraftConflictError, DraftCorruptError, DraftNotFoundError
 from content_pipeline.models import TaskInput
 from content_pipeline.orchestrator import Orchestrator
 from content_pipeline.settings import Settings
 
+__all__ = ["build_content_router"]
+
 
 class DeleteDraftsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     draft_ids: list[str] = Field(min_length=1, max_length=100)
 
     @field_validator("draft_ids")
     @classmethod
     def validate_draft_ids(cls, values: list[str]) -> list[str]:
-        if any(len(value) != 32 or any(character not in "0123456789abcdef" for character in value) for value in values):
-            raise ValueError("draft_ids must contain 32-character lowercase hexadecimal ids")
-        return list(dict.fromkeys(values))
+        result: list[str] = []
+        for value in values:
+            draft_id = value.strip()
+            if len(draft_id) != 32 or any(character not in "0123456789abcdef" for character in draft_id):
+                raise ValueError("draft_ids must contain 32-character lowercase hexadecimal ids")
+            if draft_id not in result:
+                result.append(draft_id)
+        return result
 
 
 def build_content_router(
@@ -43,8 +52,8 @@ def build_content_router(
         return {**service.bootstrap(), "publish_enabled": settings.web_publish_enabled}
 
     @router.get("/drafts")
-    def list_drafts(limit: int = 30) -> dict[str, Any]:
-        drafts = service.store.list(limit=max(1, min(limit, 100)))
+    def list_drafts(limit: int = Query(default=30, ge=1, le=100)) -> dict[str, Any]:
+        drafts = service.store.list(limit=limit)
         return {
             "drafts": [
                 draft.model_dump(mode="json", exclude={"research"})
@@ -69,12 +78,20 @@ def build_content_router(
     router.add_api_route("/drafts/batch-delete", delete_drafts_result, methods=["POST"])
     router.add_api_route("/drafts/delete", delete_drafts_result, methods=["POST"], include_in_schema=False)
 
+    def invalid_draft_error(exc: DraftCorruptError) -> HTTPException:
+        return HTTPException(
+            status_code=500,
+            detail={"code": "content_draft_invalid", "message": "content draft is invalid"},
+        )
+
     @router.get("/drafts/{draft_id}")
     def get_draft(draft_id: str = Path(pattern=r"^[0-9a-f]{32}$")) -> dict[str, Any]:
         try:
             return service.store.get(draft_id).model_dump(mode="json")
         except DraftNotFoundError as exc:
             raise HTTPException(status_code=404, detail="content draft not found") from exc
+        except DraftCorruptError as exc:
+            raise invalid_draft_error(exc) from exc
 
     @router.delete("/drafts/{draft_id}")
     def delete_draft(draft_id: str = Path(pattern=r"^[0-9a-f]{32}$")) -> dict[str, Any]:
@@ -84,6 +101,8 @@ def build_content_router(
             raise HTTPException(status_code=404, detail="content draft not found") from exc
         except DraftConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except DraftCorruptError as exc:
+            raise invalid_draft_error(exc) from exc
         return {"draft_id": draft_id, "deleted": True}
 
     @router.patch("/drafts/{draft_id}")
@@ -103,6 +122,8 @@ def build_content_router(
             raise HTTPException(status_code=404, detail="content draft not found") from exc
         except DraftConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except DraftCorruptError as exc:
+            raise invalid_draft_error(exc) from exc
 
     @router.post("/drafts/{draft_id}/refresh", status_code=202)
     def refresh_draft(
@@ -110,11 +131,17 @@ def build_content_router(
         draft_id: str = Path(pattern=r"^[0-9a-f]{32}$"),
     ) -> dict[str, Any]:
         try:
-            return service.refresh(draft_id, request.revision).model_dump(mode="json")
+            return service.refresh(
+                draft_id,
+                request.revision,
+                enabled_source_ids=request.enabled_source_ids,
+            ).model_dump(mode="json")
         except DraftNotFoundError as exc:
             raise HTTPException(status_code=404, detail="content draft not found") from exc
         except DraftConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except DraftCorruptError as exc:
+            raise invalid_draft_error(exc) from exc
 
     @router.post("/drafts/{draft_id}/video", status_code=202)
     def generate_video(
@@ -127,6 +154,8 @@ def build_content_router(
             raise HTTPException(status_code=404, detail="content draft not found") from exc
         except DraftConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except DraftCorruptError as exc:
+            raise invalid_draft_error(exc) from exc
         errors = service.validate_for_video(draft)
         if errors:
             raise HTTPException(

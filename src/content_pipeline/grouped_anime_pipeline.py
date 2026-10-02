@@ -3,17 +3,20 @@ from __future__ import annotations
 from pathlib import Path
 
 from ._pipeline_common import _group_signature, _group_title, _partial_reasons
-from .errors import ConfigError, PrivateVisibilityUnsupportedError
+from .errors import ConfigError
 from .grouping import group_by_prefix
 from .media_validation import validate_images, validate_video
 from .models import AiArtGroupArtifact, AiArtSourceResult, GroupedAnimeParams, JobStatus, PipelineStep
 from .pipelines.registry import PipelineContext, PipelineMeta, register
 from .profiles import load_profile
+from .publish_policy import resolve_publish_plan
+from .publishing import publish_grouped_videos
 from .tools.audio_client import prepare_music_track
 from .tools.mpt_client import call_mpt
 from .tools.photo_process_client import archive_source, scan_source_images
-from .tools.sau_client import call_sau_target
 from .tools.slideshow_client import choose_bgm
+
+__all__ = ["MPT_VISUAL_ONLY_PLACEHOLDER", "run_grouped_anime_pipeline"]
 
 MPT_VISUAL_ONLY_PLACEHOLDER = "Grouped anime visual showcase"
 
@@ -25,7 +28,7 @@ MPT_VISUAL_ONLY_PLACEHOLDER = "Grouped anime visual showcase"
         description="Source images grouped by filename prefix -> per-group MPT video -> optional publish",
         required_params=["source_dir"],
         external_tools=["MoneyPrinterTurbo", "ffmpeg"],
-        publish_targets=["douyin", "bilibili"],
+        publish_targets=["douyin", "bilibili", "tencent"],
     ),
 )
 def run_grouped_anime_pipeline(ctx: PipelineContext) -> None:
@@ -116,7 +119,7 @@ def run_grouped_anime_pipeline(ctx: PipelineContext) -> None:
         signature = _group_signature(valid_images)
         group_dir = job_dir / "groups" / f"{group_index:02d}"
         mpt_task_id = f"{task_id}-g{group_index:02d}"
-        group.mpt_task_dir = (settings.mpt_dir / "storage" / "tasks" / f"ai-popline-{mpt_task_id}").resolve()
+        group.mpt_task_dir = (settings.mpt_dir / "storage" / "tasks" / f"ai-pipeline-{mpt_task_id}").resolve()
 
         try:
             group.bgm = prepare_music_track(
@@ -161,50 +164,21 @@ def run_grouped_anime_pipeline(ctx: PipelineContext) -> None:
     artifacts.validation.video = valid_groups[0].validation
 
     # Publish step
-    if not snapshot.task.publish:
-        artifacts.upload_result = {"skipped": True, "reason": "publish_not_requested"}
-        store.set_artifacts(task_id, artifacts)
-        store.event(task_id, "upload_skipped", {"reason": "publish_not_requested"})
-    else:
-        if not snapshot.task.publish_targets:
-            raise ConfigError("publish=true requires at least one publish target for a grouped anime task")
-        store.mark_running(task_id, PipelineStep.UPLOAD)
-        total_groups = len(valid_groups)
-        for published_index, group in enumerate(valid_groups, start=1):
-            publish_title = params.title or snapshot.task.topic or "动漫作品展示"
-            title = _group_title(publish_title, published_index, total_groups)
-            for target in snapshot.task.publish_targets:
-                key = f"{target.platform}:{target.account}"
-                try:
-                    result = call_sau_target(
-                        target=target,
-                        video=Path(group.video).resolve(),
-                        title=title,
-                        desc=params.description or snapshot.task.description,
-                        tags=params.tags,
-                        settings=settings,
-                        dry_run=bool(snapshot.task.params.get("dry_run")),
-                    )
-                    group.publish_results[key] = {"status": "succeeded", **result}
-                except PrivateVisibilityUnsupportedError as exc:
-                    group.publish_results[key] = {"status": "blocked", "error": str(exc)}
-                except Exception as exc:
-                    group.publish_results[key] = {"status": "failed", "error": str(exc)}
-                store.set_artifacts(task_id, artifacts)
-        artifacts.upload_result = {
-            "groups": {str(group.index): group.publish_results for group in valid_groups},
-            "delivery_states": {
-                f"{group.index}:{target_key}": (
-                    result.get("delivery_status")
-                    or result.get("visibility")
-                    or ("failed" if result.get("status") != "succeeded" else "unknown")
-                )
-                for group in valid_groups
-                for target_key, result in group.publish_results.items()
-            },
-        }
-        states = set(artifacts.upload_result["delivery_states"].values())
-        artifacts.upload_result["visibility"] = next(iter(states)) if len(states) == 1 else "mixed"
+    plan = resolve_publish_plan("grouped_anime", snapshot.task, settings=settings)
+    publish_title = params.title or snapshot.task.topic or "动漫作品展示"
+    publish_grouped_videos(
+        snapshot=snapshot,
+        store=store,
+        artifacts=artifacts,
+        settings=settings,
+        groups=valid_groups,
+        requested=plan["requested"],
+        targets=plan["targets"],
+        dry_run=bool(snapshot.task.params.get("dry_run")),
+        title_for=lambda index, total: _group_title(publish_title, index, total),
+        description=params.description or snapshot.task.description,
+        tags=params.tags,
+    )
 
     store.set_artifacts(task_id, artifacts)
     partial_reasons = _partial_reasons(artifacts, snapshot.task.publish)

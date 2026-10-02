@@ -17,11 +17,15 @@ from starlette.responses import JSONResponse, Response
 from content_pipeline.api.network import peer_is_allowed
 from content_pipeline.settings import Settings
 
-SESSION_COOKIE = "ai_popline_session"
-CSRF_COOKIE = "ai_popline_csrf"
+__all__ = ["SessionData", "WebSecurity"]
+
+SESSION_COOKIE = "ai_pipeline_session"
+CSRF_COOKIE = "ai_pipeline_csrf"
+LEGACY_SESSION_COOKIE = "ai_popline_session"
+LEGACY_CSRF_COOKIE = "ai_popline_csrf"
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 PUBLIC_PATHS = {"/health", "/auth/login"}
-PUBLIC_ASSET_PATHS = {"/", "/health"}
+PUBLIC_ASSET_PATHS = {"/", "/health", "/monitor/uptime-kuma"}
 PUBLIC_PREFIXES = ("/static/",)
 
 
@@ -45,6 +49,8 @@ class WebSecurity:
             and len(api_token) >= 32
             and len(session_secret) >= 32
             and not secrets.compare_digest(admin_token, api_token)
+            and not secrets.compare_digest(admin_token, session_secret)
+            and not secrets.compare_digest(api_token, session_secret)
         )
         self._login_failures: dict[str, list[float]] = {}
         self._failure_lock = threading.Lock()
@@ -92,7 +98,7 @@ class WebSecurity:
 
         if request.method in UNSAFE_METHODS and auth_kind == "session":
             csrf_header = request.headers.get("x-csrf-token", "")
-            csrf_cookie = request.cookies.get(CSRF_COOKIE, "")
+            csrf_cookie = request.cookies.get(CSRF_COOKIE, "") or request.cookies.get(LEGACY_CSRF_COOKIE, "")
             if not session or not csrf_header or not csrf_cookie:
                 return self._error(403, "csrf_failed", "CSRF token required")
             if not secrets.compare_digest(csrf_header, csrf_cookie) or not secrets.compare_digest(
@@ -109,7 +115,7 @@ class WebSecurity:
             if expected and secrets.compare_digest(supplied, expected):
                 return "bearer", None
 
-        session_cookie = request.cookies.get(SESSION_COOKIE, "")
+        session_cookie = request.cookies.get(SESSION_COOKIE, "") or request.cookies.get(LEGACY_SESSION_COOKIE, "")
         session = self.decode_session(session_cookie)
         if session is not None:
             return "session", session
@@ -193,6 +199,8 @@ class WebSecurity:
     def clear_session_cookies(response: Response) -> None:
         response.delete_cookie(SESSION_COOKIE, path="/", samesite="strict")
         response.delete_cookie(CSRF_COOKIE, path="/", samesite="strict")
+        response.delete_cookie(LEGACY_SESSION_COOKIE, path="/", samesite="strict")
+        response.delete_cookie(LEGACY_CSRF_COOKIE, path="/", samesite="strict")
 
     def add_security_headers(self, request: Request, response: Response) -> Response:
         response.headers["X-Content-Type-Options"] = "nosniff"

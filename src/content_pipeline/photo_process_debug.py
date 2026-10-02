@@ -13,6 +13,19 @@ from urllib.request import ProxyHandler, build_opener
 from content_pipeline.models import AdapterResult, ErrorCode
 from content_pipeline.settings import Settings
 
+__all__ = [
+    "DEFAULT_DEBUG_URL",
+    "DEFAULT_DESKTOP_HELPER_URL",
+    "DebugMode",
+    "SNAPSHOT_RELATIVE_PATH",
+    "VISIBLE_WINDOW_TIMEOUT_SECONDS",
+    "inspect_chrome_profile_processes",
+    "inspect_visible_chrome_windows",
+    "main",
+    "open_photo_process_debug",
+    "open_photo_process_desktop_debug",
+]
+
 DEFAULT_DEBUG_URL = "https://gemini.google.com/app"
 DEFAULT_DESKTOP_HELPER_URL = "http://127.0.0.1:8767"
 SNAPSHOT_RELATIVE_PATH = Path("logs") / "frontend_dom_snapshot.json"
@@ -354,7 +367,7 @@ def _result(
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
-    parser = argparse.ArgumentParser(description="AI Popline diagnostics")
+    parser = argparse.ArgumentParser(description="AI Pipeline diagnostics")
     subparsers = parser.add_subparsers(dest="command", required=True)
     photo_debug = subparsers.add_parser("photo-debug", help="Open Photo-Process foreground debug browser")
     photo_debug.add_argument("--url", default=DEFAULT_DEBUG_URL, help="Gemini or Gem URL to open")

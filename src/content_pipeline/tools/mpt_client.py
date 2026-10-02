@@ -9,7 +9,9 @@ from content_pipeline.errors import ExternalToolError
 from content_pipeline.profiles import VideoGenProfile
 from content_pipeline.rendering import render_template
 from content_pipeline.settings import Settings
-from content_pipeline.tools.common import run_command
+from content_pipeline.tools.common import _mpt_temporary_environment, mpt_task_id, run_command
+
+__all__ = ["call_mpt"]
 
 
 def call_mpt(
@@ -57,7 +59,7 @@ def call_mpt(
         "--video-aspect",
         profile.aspect,
         "--task-id",
-        f"ai-popline-{task_id}",
+        mpt_task_id(f"ai-pipeline-{task_id}"),
     ]
     if custom_audio_file:
         command.extend(["--custom-audio-file", str(custom_audio_file.resolve())])
@@ -75,10 +77,12 @@ def call_mpt(
     if allow_cross_post:
         command.append("--allow-cross-post")
 
-    result = run_command(command, cwd=settings.mpt_dir, timeout=1800, retries=2)
+    with _mpt_temporary_environment() as env:
+        result = run_command(command, cwd=settings.mpt_dir, timeout=1800, retries=2, env=env)
     video = _extract_video_path(result.stdout, settings.mpt_dir)
     if not video:
         raise ExternalToolError("MPT completed but no mp4 path was found in output")
+    video = _guard_generated_video(video, settings.mpt_dir)
     target = output_dir / video.name
     if video.resolve() != target.resolve():
         target.write_bytes(video.read_bytes())
@@ -86,7 +90,7 @@ def call_mpt(
 
 
 def _stage_local_materials(task_id: str, images: list[Path], mpt_dir: Path) -> list[Path]:
-    staging_dir = (mpt_dir / "storage" / "local_videos" / f"ai-popline-{task_id}").resolve()
+    staging_dir = (mpt_dir / "storage" / "local_videos" / f"ai-pipeline-{task_id}").resolve()
     staging_dir.mkdir(parents=True, exist_ok=True)
     staged: list[Path] = []
     for index, image in enumerate(images, start=1):
@@ -96,6 +100,18 @@ def _stage_local_materials(task_id: str, images: list[Path], mpt_dir: Path) -> l
             shutil.copy2(source, target)
         staged.append(target)
     return staged
+
+
+def _guard_generated_video(video: Path, mpt_dir: Path) -> Path:
+    resolved_video = video.resolve()
+    resolved_mpt_dir = mpt_dir.resolve()
+    try:
+        resolved_video.relative_to(resolved_mpt_dir)
+    except ValueError as exc:
+        raise ExternalToolError(f"MPT reported a video outside mpt_dir: {video}") from exc
+    if video.is_symlink() or not resolved_video.is_file() or resolved_video.suffix.lower() != ".mp4":
+        raise ExternalToolError(f"MPT reported an invalid video path: {video}")
+    return resolved_video
 
 
 def _extract_video_path(stdout: str, base_dir: Path) -> Path | None:

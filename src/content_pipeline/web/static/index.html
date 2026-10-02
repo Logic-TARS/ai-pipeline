@@ -5,10 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
   <meta name="theme-color" content="#09111f">
-  <title>AI Popline · 内容控制台</title>
+  <title>AI Pipeline · 内容控制台</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/styles.css">
   <script src="/static/app.js" defer></script>
   <script src="/static/content-studio.js" defer></script>
+  <script src="/static/scheduler.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -22,7 +24,7 @@
       </button>
       <div class="brand-mark" aria-hidden="true"><span>AI</span></div>
       <p class="eyebrow">LOCAL-FIRST CONTENT OPS</p>
-      <h1 id="login-title">登录 AI Popline</h1>
+      <h1 id="login-title">登录 AI Pipeline</h1>
       <p class="muted">使用管理员令牌进入本地内容生产控制台。凭据仅发送到当前服务。</p>
       <label for="admin-token">管理员令牌</label>
       <div class="password-wrap">
@@ -37,15 +39,17 @@
 
   <div id="app-shell" class="app-shell" hidden>
     <header class="topbar">
-      <a class="brand" href="/" aria-label="AI Popline 首页">
+      <a class="brand" href="/" aria-label="AI Pipeline 首页">
         <span class="brand-symbol" aria-hidden="true">P</span>
-        <span><strong>AI Popline</strong><small>内容生产控制台</small></span>
+        <span><strong>AI Pipeline</strong><small>内容生产控制台</small></span>
       </a>
       <nav class="primary-nav" aria-label="控制台工作区">
         <button class="nav-button active" type="button" data-console-view="studio"><span aria-hidden="true">✦</span>内容工作台</button>
         <button class="nav-button" type="button" data-console-view="jobs"><span aria-hidden="true">◫</span>任务中心</button>
+        <button class="nav-button" type="button" data-console-view="schedule"><span aria-hidden="true">◷</span>定时任务</button>
       </nav>
       <div class="topbar-actions">
+        <button id="open-settings-center" class="button ghost compact" type="button"><span aria-hidden="true">⚙</span> 设置中心</button>
         <button class="button ghost compact theme-toggle" type="button" aria-label="切换到浅色模式" title="切换到浅色模式">
           <span class="theme-icon" aria-hidden="true">☀</span><span class="theme-label">浅色模式</span>
         </button>
@@ -119,6 +123,7 @@
 
               <section class="studio-form-block">
                 <div class="studio-section-head"><div><h3>最新资料</h3><p id="research-updated">尚未采集</p></div><button id="refresh-research" class="button ghost compact" type="button">重新获取资料</button></div>
+                <div id="research-source-toggles" class="source-toggle-list"></div>
                 <div id="research-alert" class="warning-box" hidden></div>
                 <div id="research-grid" class="research-grid"></div>
               </section>
@@ -191,7 +196,7 @@
 
           <div class="table-wrap">
             <table class="jobs-table">
-              <thead><tr><th><span class="sr-only">选择</span></th><th>任务</th><th>流水线</th><th>生成状态</th><th>发布状态</th><th>更新时间</th><th><span class="sr-only">操作</span></th></tr></thead>
+              <thead><tr><th><input id="select-all-jobs" type="checkbox" aria-label="全选可删除任务"></th><th>任务</th><th>流水线</th><th>生成状态</th><th>发布状态</th><th>更新时间</th><th><span class="sr-only">操作</span></th></tr></thead>
               <tbody id="jobs-body"></tbody>
             </table>
             <div id="jobs-empty" class="empty-state" hidden>
@@ -212,6 +217,43 @@
         </aside>
       </section>
       </section>
+
+      <section id="schedule-view" class="console-view" hidden>
+      <section class="hero jobs-hero" aria-labelledby="schedule-title">
+        <div class="hero-copy-wrap">
+          <p class="eyebrow">SCHEDULED AUTOMATION</p>
+          <h1 id="schedule-title">让内容按时自动生产</h1>
+          <p class="hero-copy">设定运行时间与频率，系统会到点自动创建任务并交给流水线执行。</p>
+        </div>
+        <div class="hero-actions"><small>默认定时任务只生成内容，可在创建时开启自动发布</small><button id="create-schedule-button" class="button primary hero-button" type="button">
+          <span aria-hidden="true">＋</span> 新建定时任务
+        </button></div>
+      </section>
+
+      <section class="workspace schedule-workspace">
+        <article class="panel jobs-panel" aria-labelledby="schedules-title">
+          <header class="panel-header">
+            <div>
+              <p class="eyebrow">SCHEDULES</p>
+              <h2 id="schedules-title">定时任务</h2>
+            </div>
+            <span id="schedule-updated" class="updated-label">尚未刷新</span>
+          </header>
+
+          <div class="table-wrap">
+            <table class="jobs-table schedules-table">
+              <thead><tr><th>名称</th><th>流水线</th><th>频率</th><th>下次运行</th><th>上次运行</th><th>状态</th><th><span class="sr-only">操作</span></th></tr></thead>
+              <tbody id="schedules-body"></tbody>
+            </table>
+            <div id="schedules-empty" class="empty-state" hidden>
+              <span class="empty-icon" aria-hidden="true">◷</span>
+              <h3>还没有定时任务</h3>
+              <p>新建一个定时任务，让内容流水线每天或每周自动运行。</p>
+            </div>
+          </div>
+        </article>
+      </section>
+      </section>
     </main>
   </div>
 
@@ -228,12 +270,12 @@
         </section>
 
         <section class="form-section">
-          <div class="section-heading"><span>02</span><div><h3>任务信息</h3><p>这些信息用于路由、记录和内容生成。</p></div></div>
+          <div class="section-heading"><span>02</span><div><h3 id="task-info-title">任务信息</h3><p id="task-info-help">这些信息用于路由、记录和内容生成。</p></div></div>
           <div class="form-grid two-columns">
-            <label class="field span-two">任务描述<span class="required">*</span>
+            <label id="task-description-label" class="field span-two"><span class="field-label">任务描述<span class="required">*</span></span>
               <input id="task-description" name="description" required maxlength="300" placeholder="例如：生成今日 AI 资讯视频">
             </label>
-            <label class="field span-two">内容主题
+            <label id="task-topic-label" class="field span-two"><span class="field-label">内容主题</span>
               <input id="task-topic" name="topic" maxlength="200" placeholder="留空时使用任务描述">
             </label>
           </div>
@@ -281,6 +323,7 @@
     <div class="danger-symbol" aria-hidden="true">!</div>
     <h2 id="publish-dialog-title">确认生成并发布</h2>
     <p>任务完成生成和验证后会调用真实上传器。平台隐私保护仍由服务端强制执行。</p>
+    <div id="publish-target-summary" class="publish-target-summary" hidden></div>
     <label class="field">请输入“确认发布”
       <input id="publish-confirm-input" autocomplete="off">
     </label>
@@ -322,19 +365,139 @@
         </section>
         <section class="form-section">
           <div class="section-heading"><span>02</span><div><h3>发布目标</h3><p>至少选择一个平台；平台隐私策略由服务端强制执行。</p></div></div>
-          <div class="deferred-target-list">
-            <label class="deferred-target-row"><input id="job-publish-douyin-enabled" type="checkbox"><span><strong>抖音</strong><small>仅自己可见</small></span><input id="job-publish-douyin-account" aria-label="抖音账号" placeholder="抖音账号"></label>
-            <label class="deferred-target-row"><input id="job-publish-kuaishou-enabled" type="checkbox"><span><strong>快手</strong><small>仅自己可见</small></span><input id="job-publish-kuaishou-account" aria-label="快手账号" placeholder="快手账号"></label>
-          </div>
+          <div class="deferred-target-list" id="job-publish-targets"></div>
+          <button id="job-publish-add-target" class="button ghost compact" type="button">添加平台</button>
         </section>
         <section class="form-section publish-confirm-section">
           <div class="section-heading"><span>03</span><div><h3>最终确认</h3><p>确认值与任务、视频哈希和以上发布设置绑定。</p></div></div>
+          <div id="job-publish-target-summary" class="publish-target-summary" hidden></div>
           <label class="field">请输入“确认发布”<input id="job-publish-confirm-input" autocomplete="off"></label>
         </section>
       </div>
       <footer class="modal-footer">
         <button id="cancel-job-publish" class="button ghost" type="button">取消</button>
         <button id="submit-job-publish" class="button danger" type="submit" disabled>确认并发布</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="schedule-dialog" class="modal task-modal" aria-labelledby="schedule-dialog-title">
+    <form id="schedule-form">
+      <header class="modal-header">
+        <div><p class="eyebrow">NEW SCHEDULE</p><h2 id="schedule-dialog-title">创建定时任务</h2></div>
+        <button class="icon-button close-dialog" type="button" aria-label="关闭">×</button>
+      </header>
+      <div class="modal-body">
+        <section class="form-section">
+          <div class="section-heading"><span>01</span><div><h3>定时规则</h3><p>到点后系统会自动创建并运行任务。</p></div></div>
+          <div class="form-grid two-columns">
+            <label class="field span-two"><span class="field-label">名称<span class="required">*</span></span>
+              <input id="schedule-name" maxlength="120" required placeholder="例如：每日 AI 简报">
+            </label>
+            <label class="field">频率
+              <select id="schedule-frequency">
+                <option value="daily">每天</option>
+                <option value="weekly">每周</option>
+              </select>
+            </label>
+            <label class="field">运行时间
+              <input id="schedule-time" type="time" value="08:00" required>
+            </label>
+            <div id="schedule-weekdays-wrap" class="field span-two" hidden>
+              <span class="field-label">星期</span>
+              <div id="schedule-weekdays" class="weekday-picker">
+                <label><input type="checkbox" value="0">周一</label>
+                <label><input type="checkbox" value="1">周二</label>
+                <label><input type="checkbox" value="2">周三</label>
+                <label><input type="checkbox" value="3">周四</label>
+                <label><input type="checkbox" value="4">周五</label>
+                <label><input type="checkbox" value="5">周六</label>
+                <label><input type="checkbox" value="6">周日</label>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="form-section">
+          <div class="section-heading"><span>02</span><div><h3>任务内容</h3><p>每次触发时提交给流水线的任务参数。</p></div></div>
+          <div class="form-grid two-columns">
+            <label class="field">内容流水线
+              <select id="schedule-pipeline"></select>
+            </label>
+            <label class="field"><span class="field-label">任务描述<span class="required">*</span></span>
+              <input id="schedule-description" maxlength="300" required placeholder="例如：生成今日 AI 资讯视频">
+            </label>
+            <label class="field span-two">内容主题
+              <input id="schedule-topic" maxlength="200" placeholder="留空时使用任务描述">
+            </label>
+          </div>
+          <details class="advanced-section">
+            <summary>流水线参数 JSON</summary>
+            <p>与手动创建任务时的“高级参数”一致，必须是 JSON 对象，可留空。</p>
+            <label class="sr-only" for="schedule-params">流水线参数 JSON</label>
+            <textarea id="schedule-params" rows="5" spellcheck="false" placeholder="{}"></textarea>
+          </details>
+        </section>
+        <section class="form-section publish-section">
+          <div class="section-heading"><span>03</span><div><h3>发布设置</h3><p>默认关闭。建议先用不发布的任务审查产物。</p></div></div>
+          <label class="switch-row" for="schedule-publish-toggle">
+            <span><strong>生成后尝试发布</strong><small id="schedule-publish-help">开启后每次运行都会在生成并校验后尝试发布到配置的账号。</small></span>
+            <input id="schedule-publish-toggle" type="checkbox" role="switch">
+          </label>
+        </section>
+        <p class="muted">生成结果可在任务中心查看。</p>
+      </div>
+      <footer class="modal-footer">
+        <button class="button ghost close-dialog" type="button">取消</button>
+        <button id="submit-schedule-button" class="button primary" type="submit">保存定时任务</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="publish-policy-dialog" class="modal settings-modal" aria-labelledby="publish-policy-dialog-title">
+    <form id="publish-policy-form">
+      <header class="modal-header settings-header">
+        <div><p class="eyebrow">SETTINGS CENTER</p><h2 id="publish-policy-dialog-title">设置中心</h2><p class="settings-intro">集中管理内容发布、流水线默认值与账号连接状态。</p></div>
+        <button class="icon-button close-dialog" type="button" aria-label="关闭设置中心">×</button>
+      </header>
+      <div id="settings-loading" class="settings-loading" role="status" aria-live="polite" hidden>
+        <span class="settings-loading-mark" aria-hidden="true"></span><span>正在加载设置…</span>
+      </div>
+      <div class="settings-workspace">
+        <nav id="settings-tabs" class="settings-tabs" role="tablist" aria-label="设置分类" aria-orientation="vertical">
+          <button id="settings-tab-publish" class="settings-tab" type="button" role="tab" aria-selected="true" aria-controls="settings-panel-publish" tabindex="0" data-settings-tab="publish"><span class="settings-tab-index">01</span><span><strong>发布策略</strong><small>内容类型与发布目标</small></span></button>
+          <button id="settings-tab-defaults" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-defaults" tabindex="-1" data-settings-tab="defaults"><span class="settings-tab-index">02</span><span><strong>默认参数</strong><small>流水线 JSON 配置</small></span></button>
+          <button id="settings-tab-accounts" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-accounts" tabindex="-1" data-settings-tab="accounts"><span class="settings-tab-index">03</span><span><strong>账号状态</strong><small>连接来源与可用性</small></span></button>
+        </nav>
+        <div class="settings-panels">
+          <section id="settings-panel-publish" class="settings-panel" role="tabpanel" aria-labelledby="settings-tab-publish" data-settings-panel="publish">
+            <header class="settings-panel-header"><div><p class="eyebrow">PUBLISHING</p><h3>发布策略</h3><p>配置每种内容的默认发布开关与目标账号。任务上显式的选择始终优先。</p></div><div id="publish-policy-summary" class="settings-summary" aria-live="polite"></div></header>
+            <label class="sr-only" for="publish-policy-content-type">内容类型</label>
+            <select id="publish-policy-content-type" class="sr-only" tabindex="-1" aria-hidden="true"></select>
+            <div id="publish-policy-content-nav" class="policy-content-nav" aria-label="发布内容类型"></div>
+            <div id="publish-policy-rows"></div>
+            <div id="policy-account-datalists" hidden></div>
+          </section>
+          <section id="settings-panel-defaults" class="settings-panel" role="tabpanel" aria-labelledby="settings-tab-defaults" data-settings-panel="defaults" hidden>
+            <header class="settings-panel-header"><div><p class="eyebrow">PIPELINE DEFAULTS</p><h3>流水线默认参数</h3><p>任务未显式提供的参数使用这里的默认值。每项必须是 JSON 对象，也可以留空。</p></div><div id="pipeline-defaults-summary" class="settings-summary" aria-live="polite"></div></header>
+            <label class="switch-row settings-switch" for="pipeline-defaults-enabled">
+              <span><strong>启用默认参数</strong><small>关闭时下方配置不会影响任何任务。</small></span>
+              <input id="pipeline-defaults-enabled" type="checkbox" role="switch">
+            </label>
+            <div id="pipeline-defaults-rows" class="pipeline-defaults-list"></div>
+          </section>
+          <section id="settings-panel-accounts" class="settings-panel" role="tabpanel" aria-labelledby="settings-tab-accounts" data-settings-panel="accounts" hidden>
+            <header class="settings-panel-header account-panel-header"><div><p class="eyebrow">ACCOUNT HEALTH</p><h3>平台账号状态</h3><p>只读。发布失败时先确认连接来源和平台登录状态。</p></div><button id="refresh-account-status" class="button ghost compact" type="button">刷新状态</button></header>
+            <div id="account-status-summary" class="account-status-summary" aria-live="polite">
+              <span id="account-status-source">尚未加载账号来源</span>
+            </div>
+            <div id="account-status-rows" class="account-status-grid"><p class="muted">打开设置中心时加载。</p></div>
+          </section>
+        </div>
+      </div>
+      <footer class="modal-footer settings-footer">
+        <span id="settings-save-status" class="settings-save-status" aria-live="polite">更改仅在保存后生效</span>
+        <div><button class="button ghost close-dialog" type="button">取消</button><button id="submit-publish-policy" class="button primary" type="submit">保存设置</button></div>
       </footer>
     </form>
   </dialog>

@@ -8,6 +8,8 @@ import imageio_ffmpeg
 from content_pipeline.errors import ConfigError
 from content_pipeline.tools.common import run_command
 
+__all__ = ["SLIDESHOW_RENDER_VERSION", "choose_bgm", "render_slideshow"]
+
 SLIDESHOW_RENDER_VERSION = "static-fade-v2"
 
 

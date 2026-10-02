@@ -1,8 +1,8 @@
-# AI Popline Architecture
+# AI Pipeline Architecture
 
 ## Overview
 
-AI Popline is a local AI content production pipeline that orchestrates Gemini, Photo-Process, MoneyPrinterTurbo (MPT), social-auto-upload (SAU), and allowlisted read-only ttskill research to generate and publish short-form video content across 7 content pipelines.
+AI Pipeline is a local AI content production pipeline that orchestrates Gemini, Photo-Process, Cover-Forge, MoneyPrinterTurbo (MPT), social-auto-upload (SAU), and allowlisted read-only ttskill research to generate validated short-form media across 8 content pipelines.
 
 ```
 TaskInput (JSON/MCP/REST)
@@ -12,14 +12,15 @@ TaskInput (JSON/MCP/REST)
   → JobSnapshot (persisted to output/jobs/<id>/)
 ```
 
-## Seven Content Pipelines
+## Eight Content Pipelines
 
 | Pipeline | Content Type | Flow | External Tools |
 |---|---|---|---|
 | **Anime** | `anime` | Gemini image gen → MPT video → Bilibili upload | Gemini, MPT, SAU |
 | **Finance** | `finance` | Markdown parsing → narrated MPT video → Douyin/Kuaishou publish | MPT, SAU |
-| **AI Briefing** | `ai_briefing` | Daily handoff → script building → narrated MPT → Douyin/Kuaishou/Tencent publish | MPT, SAU |
+| **AI Briefing** | `ai_briefing` | Daily handoff → script → cover (Cover-Forge or local Pillow fallback) → narrated MPT → optional publish | Cover-Forge (optional), MPT, SAU |
 | **AI Art** | `ai_art` | Photo-Process folder editing → slideshow groups → optional private publish | Photo-Process, ffmpeg, SAU |
+| **Xiaohongshu Image Note** | `xhs_image_note` | Photo-Process optimization → local image output only | Photo-Process |
 | **Grouped Anime** | `grouped_anime` | Source images grouped by prefix → per-group MPT video → optional publish | MPT, SAU |
 | **Japanese** | `japanese` | Photo-Process Gem editing → local image output only | Photo-Process |
 | **Script Video** | `script_video` | Reviewed 350–500 character narration → local 9:16 video | MPT |
@@ -33,7 +34,8 @@ ROUTE → SOURCE_SCAN → IMAGE → VIDEO → ARCHIVE → UPLOAD → COMPLETE
 ```
 
 - **Japanese** stops after IMAGE (no video or upload)
-- **Finance** and **AI Briefing** skip IMAGE (no image generation)
+- **AI Briefing** uses IMAGE for its required cover before VIDEO
+- **Finance** skips IMAGE (no image generation)
 - **Anime** (legacy) uses IMAGE → VIDEO → UPLOAD
 
 ## External Tool Dependencies
@@ -42,6 +44,7 @@ ROUTE → SOURCE_SCAN → IMAGE → VIDEO → ARCHIVE → UPLOAD → COMPLETE
 |---|---|---|---|
 | Gemini Skill | `GEMINI_SKILL_DIR` | `adapters/gemini_mcp.py` | MCP-based image generation |
 | Photo-Process | `PHOTO_PROCESS_DIR` | `adapters/photo_process.py` | Browser-automated image editing |
+| Cover-Forge | `COVER_FORGE_URL` | `tools/cover_forge_client.py` | Localhost HTTP cover rendering |
 | MoneyPrinterTurbo | `MPT_DIR` | `adapters/mpt.py`, `adapters/mpt_narrated.py` | Video generation |
 | social-auto-upload | `SAU_DIR` | `adapters/sau.py` | Multi-platform publishing |
 | ffmpeg | (system) | `adapters/slideshow.py`, `adapters/audio.py` | Slideshow rendering, music prep |
@@ -53,9 +56,13 @@ ROUTE → SOURCE_SCAN → IMAGE → VIDEO → ARCHIVE → UPLOAD → COMPLETE
 |---|---|---|
 | CLI | `python -m content_pipeline.orchestrator --task <file>` | Run a task JSON synchronously |
 | MCP | `python -m content_pipeline.mcp_server` | MCP stdio server (18 tools) |
-| Web / REST | `ai-popline serve` | Packaged operator console and guarded API for loopback or an explicitly configured ZeroTier interface |
-| Doctor | `ai-popline doctor` | Environment and tool diagnostics |
-| Capabilities | `ai-popline capabilities` | List available pipelines |
+| Web / REST | `ai-pipeline serve` | Packaged operator console and guarded API for loopback or an explicitly configured ZeroTier interface |
+| Doctor | `ai-pipeline doctor` | Environment and tool diagnostics |
+| Capabilities | `ai-pipeline capabilities` | List available pipelines |
+
+## Production Handoff Boundary
+
+Production delivery is gated by `bash scripts/check.sh`, which runs formatting, Ruff lint, non-external/non-publish tests, sdist and wheel content checks, dependency compatibility through `uv pip check`, installed-wheel CLI smoke tests, and an isolated wheel smoke that proves packaged defaults load without the repository checkout. Runtime handoff uses the guarded `ai-pipeline serve` entry point, durable writable job storage, private publishing defaults, and the local-only adapter boundary documented in the runbooks.
 
 ## Adapter Pattern
 
@@ -83,15 +90,16 @@ Jobs are stored at `<data_dir>/jobs/<task_id>/`:
 - `events.jsonl` — append-only audit log (job_created, step_started, job_finished, etc.)
 - `images/` — generated/staged images
 - `video/` — generated MP4 files
+- `cover/cover.png` — exact-size cover for real AI Briefing jobs (Cover-Forge output or local Pillow fallback)
 - Pipeline-specific directories (groups/, processed/, photo_process_sources/)
 
 ## Publishing Safety
 
-All publishing defaults to OFF. `TaskInput.publish` must be explicitly `true`. Each platform has private-visibility enforcement:
+All publishing defaults to OFF. `TaskInput.publish` must be explicitly `true`. Visibility defaults to private (仅自己可见); each publish target may explicitly select `public`. Both modes are evidence-enforced:
 
-- **Douyin**: must prove "仅自己可见"
-- **Kuaishou**: must prove private visibility
-- **Bilibili**: requires `SAU_BILIBILI_PRIVATE_ARGS=--is-only-self 1`
+- **Douyin**: must prove the selected visibility ("仅自己可见" or "公开可见")
+- **Kuaishou**: must prove the selected visibility
+- **Bilibili**: private requires `SAU_BILIBILI_PRIVATE_ARGS=--is-only-self 1`; public omits the flag
 - **Tencent**: saves as draft only
 
 Fail-closed: any uncertainty → BLOCKED status.
@@ -104,7 +112,7 @@ src/content_pipeline/
   web/static/   # Packaged no-Node operator console
   cli/          # CLI entry points (doctor, capabilities, orchestrator runner)
   core/         # settings, models, errors, router
-  pipelines/    # 6 pipeline implementations + registry
+  pipelines/    # Pipeline registration package and registry
   adapters/     # external tool clients (gemini, mpt, photo_process, sau, ffmpeg)
   storage/      # job store persistence
   validation/   # media validation, grouping

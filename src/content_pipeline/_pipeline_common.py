@@ -6,6 +6,8 @@ from pathlib import Path
 from .models import ArtifactSet
 from .tools.slideshow_client import SLIDESHOW_RENDER_VERSION
 
+__all__ = ["_group_signature", "_group_title", "_partial_reasons"]
+
 
 def _group_title(title: str, index: int, total: int) -> str:
     """Append a group counter to a title, e.g. 'My Title 1/3'."""

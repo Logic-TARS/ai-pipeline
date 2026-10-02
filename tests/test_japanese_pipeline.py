@@ -49,7 +49,7 @@ def test_japanese_pipeline_saves_processed_images_locally(tmp_path: Path, monkey
             params={
                 "source_dir": str(source_dir),
                 "output_dir": str(output_dir),
-                "image_prompt": "改成日语风格海报",
+                "process_name": "日语视觉化",
             },
         )
     )
@@ -102,7 +102,11 @@ def test_japanese_pipeline_partial_when_one_image_fails(tmp_path: Path, monkeypa
 
     monkeypatch.setattr(japanese_pipeline, "run_photo_process_adapter", fake_photo_process)
 
-    settings = Settings(data_dir=tmp_path / "output", profiles_dir=Path("profiles"))
+    settings = Settings(
+        data_dir=tmp_path / "output",
+        profiles_dir=Path("profiles"),
+        pipeline_defaults_file=tmp_path / "missing-defaults.yaml",
+    )
     orchestrator = Orchestrator(settings=settings, store=JobStore(settings.data_dir))
     task_id = orchestrator.submit(
         TaskInput(
@@ -110,7 +114,7 @@ def test_japanese_pipeline_partial_when_one_image_fails(tmp_path: Path, monkeypa
             content_type="japanese",
             params={
                 "source_dir": str(source_dir),
-                "image_prompt": "改成日语风格海报",
+                "process_name": "日语视觉化",
             },
         )
     )
@@ -172,7 +176,7 @@ def test_japanese_pipeline_retries_by_name_when_fixed_gem_url_fails(tmp_path: Pa
             params={
                 "source_dir": str(source_dir),
                 "output_dir": str(output_dir),
-                "image_prompt": "改成日语风格海报",
+                "process_name": "日语视觉化",
             },
         )
     )
@@ -273,7 +277,7 @@ def test_japanese_pipeline_uses_task_target_gem_url(tmp_path: Path, monkeypatch)
             params={
                 "source_dir": str(source_dir),
                 "output_dir": str(output_dir),
-                "image_prompt": "改成日语风格海报",
+                "process_name": "日语视觉化",
                 "target_gem_url": target_url,
             },
         )

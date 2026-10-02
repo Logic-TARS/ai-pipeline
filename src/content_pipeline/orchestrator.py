@@ -14,6 +14,9 @@ from .pipeline_config import apply_pipeline_defaults
 from .pipelines.registry import PipelineContext, get_pipeline
 from .router import route_task
 from .settings import Settings, load_settings
+from .task_validation import validate_task_params
+
+__all__ = ["Orchestrator", "main", "run_task_file"]
 
 
 class Orchestrator:
@@ -62,6 +65,8 @@ def run_task_file(path: Path) -> dict:
     settings = load_settings()
     orchestrator = Orchestrator(settings=settings)
     task = TaskInput.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    if task.content_type is not None:
+        task = validate_task_params(task)
     task_id = orchestrator.submit(task)
     orchestrator.run(task_id)
     return orchestrator.store.get(task_id).model_dump(mode="json")

@@ -10,6 +10,8 @@ from content_pipeline.settings import Settings
 from content_pipeline.tools.common import run_command
 from content_pipeline.tools.gemini_mcp_client import generate_many
 
+__all__ = ["call_gemini_skill"]
+
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 
 
@@ -56,7 +58,11 @@ def call_gemini_skill(
 
 def _ordered_images(output_dir: Path) -> list[Path]:
     return sorted(
-        [path for path in output_dir.iterdir() if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES],
+        [
+            path
+            for path in output_dir.iterdir()
+            if path.is_file() and not path.is_symlink() and path.suffix.lower() in IMAGE_SUFFIXES
+        ],
         key=lambda path: path.name,
     )
 
