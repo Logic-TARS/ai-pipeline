@@ -319,6 +319,14 @@ def normalize_handoff(raw: dict[str, Any], *, date: str, handoff_path: Path, day
 def _pid_running(pid: int) -> bool:
     if pid <= 0:
         return False
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
     try:
         result = subprocess.run(
             ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
