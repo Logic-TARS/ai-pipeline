@@ -4,7 +4,7 @@
   "publish": true,
   "publish_targets": [
     {"platform": "douyin", "account": "金融破壁人"},
-    {"platform": "kuaishou", "account": "破壁人"}
+    {"platform": "kuaishou", "account": "搞AI的罗辑同学"}
   ],
   "params": {
     "date": "auto",

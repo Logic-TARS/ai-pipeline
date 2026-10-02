@@ -1,0 +1,41 @@
+# AI Pipeline central publish policy
+#
+# This file is loaded from PUBLISH_DEFAULTS_FILE, defaulting to this path.
+# It is the single place that decides whether each content type publishes by
+# default, and to which platforms/accounts.
+#
+# Merge rule (per task):
+# - task.publish set explicitly (true/false) always wins over `enabled` here.
+# - task.publish omitted (null) inherits `enabled` from this policy.
+# - task.publish_targets always wins over `targets` here.
+# - Changes saved from the web console are stored in
+#   <data_dir>/publish_policy.json and override this file.
+
+finance:
+  enabled: false
+  targets:
+    - { platform: douyin, account: 金融破壁人 }
+    - { platform: kuaishou, account: 搞AI的罗辑同学 }
+    - { platform: tencent, account: 每日金融摘要 }
+
+ai_briefing:
+  enabled: false
+  targets:
+    - { platform: douyin, account: 金融破壁人 }
+    - { platform: kuaishou, account: 搞AI的罗辑同学 }
+    - { platform: tencent, account: 每日金融摘要 }
+
+script_video:
+  enabled: false
+  targets:
+    - { platform: douyin, account: 金融破壁人 }
+    - { platform: kuaishou, account: 搞AI的罗辑同学 }
+    - { platform: tencent, account: 每日金融摘要 }
+
+grouped_anime:
+  enabled: false
+  targets: []
+
+ai_art:
+  enabled: false
+  targets: []

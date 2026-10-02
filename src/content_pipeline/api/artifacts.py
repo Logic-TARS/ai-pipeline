@@ -10,6 +10,10 @@ from pydantic import BaseModel
 
 from content_pipeline.models import JobSnapshot
 
+__all__ = ["RegisteredArtifact", "registered_artifacts"]
+
+_CONTROL_FILE_NAMES = {"status.json", "events.jsonl"}
+
 
 @dataclass(frozen=True)
 class RegisteredArtifact:
@@ -22,6 +26,8 @@ class RegisteredArtifact:
 
 def registered_artifacts(snapshot: JobSnapshot, job_dir: Path) -> dict[str, RegisteredArtifact]:
     """Return existing artifact files that resolve inside this job directory."""
+    if job_dir.is_symlink() or not job_dir.is_dir():
+        return {}
     root = job_dir.resolve()
     result: dict[str, RegisteredArtifact] = {}
     for candidate in _iter_paths(snapshot.artifacts):
@@ -30,7 +36,7 @@ def registered_artifacts(snapshot: JobSnapshot, job_dir: Path) -> dict[str, Regi
             relative = resolved.relative_to(root)
         except (OSError, RuntimeError, ValueError):
             continue
-        if not resolved.is_file():
+        if not resolved.is_file() or resolved.name in _CONTROL_FILE_NAMES:
             continue
         relative_path = relative.as_posix()
         artifact_id = hashlib.sha256(relative_path.encode("utf-8")).hexdigest()[:24]

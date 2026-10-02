@@ -1,11 +1,11 @@
 # Internal Agent Interface
 
-This document is for internal agents and maintainers that call AI Popline from
+This document is for internal agents and maintainers that call AI Pipeline from
 Codex, Hermes, or another local automation layer. It describes the current task
 submission surfaces, the persisted job contract, and the lower-tool adapter
 boundary used by Photo-Process, MoneyPrinterTurbo, and social-auto-upload.
 
-AI Popline is a single-operator automation service. MCP and lower-tool interfaces remain local-only; the Web UI and REST API may additionally use the guarded ZeroTier boundary documented in [ZeroTier Web Access](zerotier-web-access.md). Public-internet and ordinary physical-LAN exposure are unsupported.
+AI Pipeline is a single-operator automation service. MCP and lower-tool interfaces remain local-only; the Web UI and REST API may additionally use the guarded ZeroTier boundary documented in [ZeroTier Web Access](zerotier-web-access.md). Public-internet and ordinary physical-LAN exposure are unsupported. Before handing an agent integration to operations, run the production quality gate (`bash scripts/check.sh`) so formatting, lint, non-external/non-publish tests, package content checks, `uv pip check`, installed-wheel CLI smoke tests, and isolated wheel smoke tests all pass against the same artifact contract the agent will call.
 
 ## Contract Layers
 
@@ -52,7 +52,7 @@ Primary agent-facing MCP tools:
 | `get_status` | Read the current persisted `JobSnapshot`. | `JobSnapshot` JSON |
 | `get_job_events` | Read recent append-only events for a task. | `{ "task_id": "...", "events": [...] }` |
 | `open_photo_process_debug` | Open Photo-Process' own foreground Gemini debug browser for human inspection. | `AdapterResult` JSON |
-| `process_ai_art_async` | Submit and start the AI-art Photo-Process folder pipeline. | `{ "task_id": "...", "status": "queued" }` |
+| `process_ai_art_async` | Submit and start the AI-art Photo-Process folder pipeline using a Photo-Process `process_name`. | `{ "task_id": "...", "status": "queued" }` |
 | `process_japanese_images` | Submit and start the Japanese local image pipeline. | `{ "task_id": "...", "status": "queued" }` |
 | `run_finance_video_async` | Submit and start the dedicated Finance Markdown-to-video pipeline. | `{ "task_id": "...", "status": "queued" }` |
 
@@ -78,7 +78,7 @@ Callers should present that as a missing-task error and should not retry blindly
 Start the guarded FastAPI listener:
 
 ```powershell
-ai-popline serve
+ai-pipeline serve
 ```
 
 Loopback development may invoke Uvicorn directly with `--no-proxy-headers`; ZeroTier deployments must use the guarded CLI and the configured exact interface IP.
@@ -88,7 +88,8 @@ Implemented endpoints:
 | Method | Path | Request | Response |
 | --- | --- | --- | --- |
 | `GET` | `/health` | none | Minimal unauthenticated liveness result |
-| `GET` | `/ready` | authenticated | Redacted readiness flags |
+| `GET` | `/monitor/uptime-kuma` | none | Minimal unauthenticated liveness payload for Uptime Kuma monitors (`ok`, `service`, `status`) |
+| `GET` | `/ready` | authenticated | Redacted readiness flags: `data_dir_available`, `profiles_available`, and `pipeline_defaults_available` |
 | `POST` | `/auth/login` | admin token | Session cookies and CSRF token |
 | `POST` | `/auth/logout` | session and CSRF token | Clears session cookies |
 | `GET` | `/auth/me` | authenticated | Authentication method |
@@ -120,7 +121,7 @@ Open Photo-Process' foreground debug browser:
 python -m content_pipeline.diagnostics photo-debug --mode automation --url <gemini-or-gem-url>
 ```
 
-This diagnostic command does not create or update an AI Popline job. It returns
+This diagnostic command does not create or update an AI Pipeline job. It returns
 an `AdapterResult` JSON envelope and exits with code `0` only if the debug
 process was launched.
 
@@ -145,7 +146,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install_desktop_browser_helpe
 ```
 
 The installer does not open Chrome or navigate to Gemini. It only registers
-`AI Popline Desktop Browser Helper` to run at user logon in the interactive
+`AI Pipeline Desktop Browser Helper` to run at user logon in the interactive
 Windows session. To request an immediate helper start without opening a browser:
 
 ```powershell
@@ -194,7 +195,8 @@ Rules:
 {
   "platform": "douyin | kuaishou | bilibili | tencent",
   "account": "account display name or identifier",
-  "tid": 21
+  "tid": 21,
+  "visibility": "private | public"
 }
 ```
 
@@ -202,7 +204,11 @@ Rules:
 
 - `account` is required.
 - `tid` is required for `bilibili`.
-- Finance supports only Douyin and Kuaishou private publishing in the current
+- `visibility` defaults to `private` (仅自己可见). Set it to `public` to
+  publish openly; both modes require uploader proof of the selected
+  visibility, and changing it invalidates the publish confirmation
+  fingerprint. `tencent` ignores `visibility` and always saves a draft.
+- Finance supports only Douyin and Kuaishou publishing in the current
   local contract.
 
 ### JobSnapshot
@@ -421,7 +427,7 @@ execution alone, as completion evidence.
 
 ### Photo-Process Foreground and Background Modes
 
-Photo-Process already owns the browser visibility contract. AI Popline callers
+Photo-Process already owns the browser visibility contract. AI Pipeline callers
 must not bypass the adapter by launching Chrome directly to inspect Gemini.
 
 Current Photo-Process settings:
@@ -439,13 +445,13 @@ python main.py ask <image> <prompt>
 python 启动调试浏览器.py "https://gemini.google.com/gem/..."
 ```
 
-Contract rules for AI Popline agents:
+Contract rules for AI Pipeline agents:
 
 - Normal pipeline execution uses the configured local Browser Worker when
   `PHOTO_PROCESS_WORKER_URL` is set; otherwise it uses the compatibility CLI JSON
   adapter (`main.py comic --json`). Both paths persist the returned `AdapterResult`.
 - If a human needs to watch or manually inspect Gemini, stop treating that as an
-  AI Popline adapter action and use Photo-Process foreground inspection
+  AI Pipeline adapter action and use Photo-Process foreground inspection
   entrypoints instead.
 - Do not use external Chrome process launches as completion evidence. They may
   create background processes without a visible desktop window and do not prove
@@ -453,7 +459,7 @@ Contract rules for AI Popline agents:
 - A visible Gemini page is diagnostic evidence only. Job success still requires
   the adapter JSON result plus parent-job artifact validation.
 
-AI Popline exposes the same foreground inspection path as a diagnostic wrapper:
+AI Pipeline exposes the same foreground inspection path as a diagnostic wrapper:
 
 ```powershell
 python -m content_pipeline.diagnostics photo-debug --mode automation --url <gemini-or-gem-url>
@@ -543,8 +549,10 @@ vertical dimensions where required, decodable video frames, usable audio when
 voiceover is expected, and subtitles when the branch requires them.
 
 social-auto-upload is called only when `TaskInput.publish` is `true`. Publishing
-adapters must fail closed for private visibility. For Finance, supported private
-targets are Douyin account `金融破壁人` and Kuaishou account `破壁人`; Finance
+adapters must fail closed on visibility evidence: targets default to private,
+may explicitly select public, and either mode requires uploader proof of the
+selected visibility. For Finance, supported
+targets are Douyin account `金融破壁人` and Kuaishou account `搞AI的罗辑同学`; Finance
 must not publish to Bilibili and must not enter the Gemini image flow.
 
 ## Recommended Agent Workflow

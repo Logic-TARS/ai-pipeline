@@ -10,6 +10,8 @@ from .models import ImageFileValidation, ImageValidation, VideoValidation
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 
+__all__ = ["validate_images", "validate_video"]
+
 
 def validate_images(paths: list[Path], expected_count: int) -> ImageValidation:
     if len(paths) != expected_count:

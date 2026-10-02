@@ -9,7 +9,8 @@ from .models import AiArtSourceResult, JapaneseParams, JobStatus, PipelineStep
 from .pipelines.registry import PipelineContext, PipelineMeta, register
 from .tools.photo_process_client import run_photo_process_adapter, scan_source_images
 
-JAPANESE_TARGET_GEM_NAME = "日语视觉化"
+__all__ = ["JAPANESE_TARGET_GEM_URL", "run_japanese_pipeline"]
+
 JAPANESE_TARGET_GEM_URL = "https://gemini.google.com/gem/f306c82a8105"
 
 
@@ -59,19 +60,19 @@ def run_japanese_pipeline(ctx: PipelineContext) -> None:
                 )
                 adapter_result = run_photo_process_adapter(
                     source=staged_source,
-                    prompt=params.image_prompt,
                     output_path=output_path,
                     settings=settings,
-                    target_gem_name=JAPANESE_TARGET_GEM_NAME,
+                    prompt=params.image_prompt,
+                    target_gem_name=params.process_name,
                     target_gem_url=params.target_gem_url or JAPANESE_TARGET_GEM_URL,
                 )
                 if not adapter_result.ok and adapter_result.code.value == "GEM_ACCESS_FAILED":
                     adapter_result = run_photo_process_adapter(
                         source=staged_source,
-                        prompt=params.image_prompt,
                         output_path=output_path,
                         settings=settings,
-                        target_gem_name=JAPANESE_TARGET_GEM_NAME,
+                        prompt=params.image_prompt,
+                        target_gem_name=params.process_name,
                         target_gem_url=None,
                     )
                 record.adapter_result = adapter_result

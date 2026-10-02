@@ -105,4 +105,42 @@ def test_photo_process_worker_adapter_reuses_local_browser_worker(
     assert result.code == ErrorCode.OK
     assert result.artifacts["processed_path"].endswith("0001.jpg")
     assert captured["url"] == "http://127.0.0.1:8000/api/comic"
+    assert b'"process_name": "' in captured["body"]
     assert b'"target_gem_name": "' in captured["body"]
+    assert b'"archive_source": false' in captured["body"]
+
+
+def test_photo_process_worker_refuses_symlinked_output_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "source.jpg"
+    generated = tmp_path / "worker.jpg"
+    outside = tmp_path / "outside.jpg"
+    Image.new("RGB", (90, 160), color="blue").save(source)
+    Image.new("RGB", (90, 160), color="green").save(generated)
+    outside.write_text("do not overwrite", encoding="utf-8")
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    (output_dir / "0001.jpg").symlink_to(outside)
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self) -> bytes:
+            return ('{"success": true, "image_path": "' + str(generated).replace("\\", "\\\\") + '"}').encode()
+
+    class FakeOpener:
+        def open(self, _request, timeout: int):
+            return FakeResponse()
+
+    monkeypatch.setattr(photo_process_client, "build_opener", lambda *_args: FakeOpener())
+
+    with pytest.raises(ExternalToolError, match="symlinked Photo-Process target"):
+        photo_process_client.run_photo_process_adapter(
+            source=source,
+            output_path=output_dir / "0001.png",
+            settings=Settings(photo_process_worker_url="http://127.0.0.1:8000"),
+        )
+    assert outside.read_text(encoding="utf-8") == "do not overwrite"

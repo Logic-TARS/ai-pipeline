@@ -3,13 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from ._pipeline_common import _group_signature, _group_title, _partial_reasons
-from .errors import ConfigError, PrivateVisibilityUnsupportedError
+from .errors import ConfigError
 from .media_validation import validate_images, validate_video
 from .models import AiArtGroupArtifact, AiArtParams, AiArtSourceResult, JobStatus, PipelineStep
 from .pipelines.registry import PipelineContext, PipelineMeta, register
+from .publish_policy import resolve_publish_plan
+from .publishing import publish_grouped_videos
 from .tools.photo_process_client import archive_source, run_photo_process_adapter, scan_source_images
-from .tools.sau_client import call_sau_target
 from .tools.slideshow_client import choose_bgm, render_slideshow
+
+__all__ = ["run_ai_art_pipeline"]
 
 
 @register(
@@ -17,9 +20,9 @@ from .tools.slideshow_client import choose_bgm, render_slideshow
     meta=PipelineMeta(
         content_type="ai_art",
         description="Photo-Process folder editing -> FFmpeg slideshow groups -> optional private publish",
-        required_params=["source_dir", "image_prompt", "title"],
+        required_params=["source_dir", "process_name", "title"],
         external_tools=["Photo-Process", "ffmpeg"],
-        publish_targets=["douyin", "bilibili"],
+        publish_targets=["douyin", "bilibili", "tencent"],
     ),
 )
 def run_ai_art_pipeline(ctx: PipelineContext) -> None:
@@ -51,9 +54,10 @@ def run_ai_art_pipeline(ctx: PipelineContext) -> None:
                 source = _available_source(record)
                 adapter_result = run_photo_process_adapter(
                     source=source,
-                    prompt=params.image_prompt,
                     output_path=job_dir / "processed" / f"{index:04d}.png",
                     settings=settings,
+                    prompt=params.image_prompt,
+                    target_gem_name=params.process_name,
                 )
                 record.adapter_result = adapter_result
                 if not adapter_result.ok:
@@ -125,36 +129,20 @@ def run_ai_art_pipeline(ctx: PipelineContext) -> None:
     artifacts.video = valid_groups[0].video
     artifacts.validation.video = valid_groups[0].validation
 
-    if not snapshot.task.publish:
-        artifacts.upload_result = {"skipped": True, "reason": "publish_not_requested"}
-        store.set_artifacts(task_id, artifacts)
-        store.event(task_id, "upload_skipped", {"reason": "publish_not_requested"})
-    else:
-        if not snapshot.task.publish_targets:
-            raise ConfigError("publish=true requires at least one publish target for an AI art task")
-        store.mark_running(task_id, PipelineStep.UPLOAD)
-        total_groups = len(valid_groups)
-        for published_index, group in enumerate(valid_groups, start=1):
-            title = _group_title(params.title, published_index, total_groups)
-            for target in snapshot.task.publish_targets:
-                key = f"{target.platform}:{target.account}"
-                try:
-                    result = call_sau_target(
-                        target=target,
-                        video=Path(group.video),
-                        title=title,
-                        desc=params.description or snapshot.task.description,
-                        tags=params.tags,
-                        settings=settings,
-                        dry_run=bool(snapshot.task.params.get("dry_run")),
-                    )
-                    group.publish_results[key] = {"status": "succeeded", **result}
-                except PrivateVisibilityUnsupportedError as exc:
-                    group.publish_results[key] = {"status": "blocked", "error": str(exc)}
-                except Exception as exc:
-                    group.publish_results[key] = {"status": "failed", "error": str(exc)}
-                store.set_artifacts(task_id, artifacts)
-        artifacts.upload_result = {"groups": {str(group.index): group.publish_results for group in valid_groups}}
+    plan = resolve_publish_plan("ai_art", snapshot.task, settings=settings)
+    publish_grouped_videos(
+        snapshot=snapshot,
+        store=store,
+        artifacts=artifacts,
+        settings=settings,
+        groups=valid_groups,
+        requested=plan["requested"],
+        targets=plan["targets"],
+        dry_run=bool(snapshot.task.params.get("dry_run")),
+        title_for=lambda index, total: _group_title(params.title, index, total),
+        description=params.description or snapshot.task.description,
+        tags=params.tags,
+    )
 
     store.set_artifacts(task_id, artifacts)
     partial_reasons = _partial_reasons(artifacts, snapshot.task.publish)

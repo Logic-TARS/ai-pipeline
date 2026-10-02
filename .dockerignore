@@ -1,0 +1,47 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# VCS and local agent state
+.git
+.github
+.agents
+.codex
+.omo
+.codegraph
+
+# Python caches and virtual environments
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+*.egg-info
+
+# Runtime data and generated artifacts
+output
+data
+logs
+*.log
+diagnostics*.zip
+nul
+stdin.txt
+test-images-integration
+
+# Build outputs
+dist
+build
+
+# Local editor / OS files
+.vscode
+.idea
+.DS_Store
+Thumbs.db

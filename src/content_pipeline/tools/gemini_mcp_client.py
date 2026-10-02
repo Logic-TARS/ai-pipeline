@@ -13,6 +13,8 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+__all__ = ["GeminiMcpClient", "generate_many"]
+
 
 class GeminiMcpClient:
     def __init__(self, skill_dir: Path, output_dir: Path, timeout: int = 240):
@@ -44,7 +46,7 @@ class GeminiMcpClient:
             {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
-                "clientInfo": {"name": "ai-popline", "version": "0.1.0"},
+                "clientInfo": {"name": "ai-pipeline", "version": "0.1.0"},
             },
         )
         self._notify("notifications/initialized", {})
@@ -92,14 +94,14 @@ class GeminiMcpClient:
         if result.get("isError"):
             raise RuntimeError(text or "gemini_generate_image failed")
         path = _extract_path(text)
-        if path and path.is_file():
-            return path
+        if path:
+            return _guard_generated_image(path, self.output_dir)
         after = sorted(
-            [p for p in self.output_dir.glob("*") if p not in before and p.is_file()],
+            [p for p in self.output_dir.glob("*") if p not in before and p.is_file() and not p.is_symlink()],
             key=lambda p: p.stat().st_mtime,
         )
         if after:
-            return after[-1]
+            return _guard_generated_image(after[-1], self.output_dir)
         raise RuntimeError(f"Gemini reported success but no image file was found. Response: {text}")
 
     def _notify(self, method: str, params: dict[str, Any]) -> None:
@@ -151,6 +153,14 @@ class GeminiMcpClient:
 def _extract_path(text: str) -> Path | None:
     matches = re.findall(r"[A-Za-z]:\\[^\n\r]+?\.(?:png|jpg|jpeg|webp)", text)
     return Path(matches[-1]) if matches else None
+
+
+def _guard_generated_image(path: Path, output_dir: Path) -> Path:
+    resolved_output_dir = output_dir.resolve()
+    resolved_path = path.resolve()
+    if path.is_symlink() or not resolved_path.is_file() or resolved_path.parent != resolved_output_dir:
+        raise RuntimeError(f"Gemini reported an image outside output_dir: {path}")
+    return resolved_path
 
 
 def generate_many(

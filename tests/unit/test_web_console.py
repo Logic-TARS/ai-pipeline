@@ -1,7 +1,9 @@
 import json
+import subprocess
 from importlib.resources import files
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from content_pipeline.api.app import create_app, task_fingerprint
@@ -45,13 +47,18 @@ def _bearer() -> dict[str, str]:
 def test_console_shell_and_static_assets_are_public_but_data_is_protected(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
         page = client.get("/")
+        favicon = client.get("/static/favicon.svg")
         css = client.get("/static/styles.css")
         javascript = client.get("/static/app.js")
         content_javascript = client.get("/static/content-studio.js")
+        scheduler_javascript = client.get("/static/scheduler.js")
         bootstrap = client.get("/ui/bootstrap")
 
     assert page.status_code == 200
-    assert "AI Popline · 内容控制台" in page.text
+    assert favicon.status_code == 200
+    assert favicon.headers["content-type"].startswith("image/svg+xml")
+    assert "AI Pipeline · 内容控制台" in page.text
+    assert '<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">' in page.text
     assert 'id="login-view"' in page.text
     assert 'id="app-shell"' in page.text
     assert 'id="template-cards"' in page.text
@@ -61,6 +68,16 @@ def test_console_shell_and_static_assets_are_public_but_data_is_protected(tmp_pa
     assert 'class="stat-icon"' in page.text
     assert "生成金融口播稿" not in page.text
     assert '<script src="/static/app.js" defer></script>' in page.text
+    assert '<script src="/static/scheduler.js" defer></script>' in page.text
+    assert 'class="modal settings-modal"' in page.text
+    assert 'id="settings-tabs"' in page.text
+    assert 'role="tablist"' in page.text
+    assert page.text.count('role="tab"') == 3
+    assert 'aria-controls="settings-panel-publish"' in page.text
+    assert 'id="publish-policy-content-nav"' in page.text
+    assert 'id="publish-policy-summary"' in page.text
+    assert 'id="account-status-source"' in page.text
+    assert 'id="refresh-account-status"' in page.text
     assert page.text.count('class="button ghost compact theme-toggle"') == 1
     assert 'class="icon-button theme-toggle auth-theme-toggle"' in page.text
     assert 'id="content-voice-rate"' in page.text
@@ -80,18 +97,29 @@ def test_console_shell_and_static_assets_are_public_but_data_is_protected(tmp_pa
     assert 'html[data-theme="light"]' in css.text
     assert "@media (prefers-contrast: more)" in css.text
     assert "@media (prefers-reduced-motion: reduce)" in css.text
+    assert "@media (forced-colors: active)" in css.text
+    assert ".settings-workspace" in css.text
+    assert ".settings-modal .switch-row input:checked { background: var(--primary-cyan); }" in css.text
+    assert ".switch-row input:checked { background: var(--red); }" in css.text
+    assert ".policy-content-nav" in css.text
+    assert ".defaults-card" in css.text
+    assert ".account-card" in css.text
+    assert "grid-template-rows: auto minmax(0, 1fr)" in css.text
     assert javascript.status_code == 200
     assert '<span class="field-label">${escapeHtml(field.label)}${requiredLabel}</span>' in javascript.text
     assert '<span class="field-label">视频标题<span class="required">*</span></span>' in page.text
     assert "localStorage.setItem(THEME_STORAGE_KEY, resolved)" in javascript.text
-    assert 'FORM_MEMORY_STORAGE_KEY = "ai-popline-form-memory-v1"' in javascript.text
+    assert 'FORM_MEMORY_STORAGE_KEY = "ai-pipeline-form-memory-v1"' in javascript.text
     assert "function rememberCurrentTaskForm()" in javascript.text
     assert "rememberedField(taskParamScope(contentType), field.name)" in javascript.text
     assert "publish_settings" in javascript.text
     assert 'response.status === 401 && errorCode === "authentication_required"' in javascript.text
     assert 'payload.detail?.code === "recent_authentication_required"' in javascript.text
-    assert "发布前需要重新验证管理员令牌" in javascript.text
+    assert "发布前需要重新验证管理员令牌，请重新登录。" in javascript.text
+    assert "请退出后重新登录" not in javascript.text
     assert 'apiRequest("/ui/bootstrap")' in javascript.text
+    assert "ready.pipeline_defaults_available" in javascript.text
+    assert "默认参数" in javascript.text
     assert content_javascript.status_code == 200
     assert 'studio.request("/content/bootstrap")' in content_javascript.text
     assert "function renderTemplateCards()" in content_javascript.text
@@ -99,12 +127,18 @@ def test_console_shell_and_static_assets_are_public_but_data_is_protected(tmp_pa
     assert "data-template-id" in content_javascript.text
     assert "创建 AI 简报口播初稿" in content_javascript.text
     assert "studio.request(`/content/drafts/${draft.draft_id}/video`" in content_javascript.text
-    assert 'STUDIO_FORM_MEMORY_STORAGE_KEY = "ai-popline-studio-form-memory-v1"' in content_javascript.text
+    assert 'STUDIO_FORM_MEMORY_STORAGE_KEY = "ai-pipeline-studio-form-memory-v1"' in content_javascript.text
     assert "function rememberedVoiceRate()" in content_javascript.text
     assert "function parseVoiceRate()" in content_javascript.text
     assert "rememberVoiceRate(voiceRate)" in content_javascript.text
     assert "voice_rate: voiceRate" in content_javascript.text
     assert "正在拉取资料并生成视频" in content_javascript.text
+    assert "超出 ${lengthLabel} 字建议范围，仍可生成和发布" in content_javascript.text
+    assert 'byId("generate-content-video").disabled = !(disclaimerOkay && complete);' in content_javascript.text
+    assert "lengthOkay && disclaimerOkay && complete" not in content_javascript.text
+    assert ".script-counter.warning" in css.text
+    assert ".script-check.warning" in css.text
+    assert "var(--warning-text)" in css.text
     assert 'studio.request(`/content/drafts/${draftId}`, { method: "DELETE" })' in content_javascript.text
     assert (
         'studio.request("/content/drafts/batch-delete", { method: "POST", body: { draft_ids: draftIds } })'
@@ -114,6 +148,7 @@ def test_console_shell_and_static_assets_are_public_but_data_is_protected(tmp_pa
     assert "handleStudioPublishToggle" not in content_javascript.text
     assert 'id="job-publish-dialog"' in page.text
     assert 'id="delete-selected-drafts"' in page.text
+    assert 'id="select-all-jobs"' in page.text
     assert 'id="delete-selected-jobs"' in page.text
     assert 'apiRequest("/jobs?limit=100")' in javascript.text
     assert 'apiRequest(`/jobs/${taskId}`, { method: "DELETE" })' in javascript.text
@@ -134,6 +169,16 @@ def test_console_shell_and_static_assets_are_public_but_data_is_protected(tmp_pa
     assert "function compactEvents(events)" in javascript.text
     assert 'elements["publish-confirm-input"].value.trim() !== "确认发布"' in javascript.text
     assert 'elements["job-publish-confirm-input"].value.trim() !== "确认发布"' in javascript.text
+    assert scheduler_javascript.status_code == 200
+    assert "function activateSettingsTab(name, focus = false)" in scheduler_javascript.text
+    assert '["ArrowRight", "ArrowDown"]' in scheduler_javascript.text
+    assert "function updatePublishPolicySummary()" in scheduler_javascript.text
+    assert "function validateDefaultsRow(row)" in scheduler_javascript.text
+    assert 'activateSettingsTab("defaults")' in scheduler_javascript.text
+    assert "function accountState(item, source)" in scheduler_javascript.text
+    assert 'if (source !== "bridge")' in scheduler_javascript.text
+    assert "function refreshAccountStatus()" in scheduler_javascript.text
+    assert 'submit.textContent = "保存中…"' in scheduler_javascript.text
     assert bootstrap.status_code == 401
     assert "default-src 'self'" in page.headers["content-security-policy"]
     assert "script-src 'self'" in page.headers["content-security-policy"]
@@ -146,6 +191,7 @@ def test_packaged_web_assets_are_available() -> None:
     assert static.joinpath("styles.css").is_file()
     assert static.joinpath("app.js").is_file()
     assert static.joinpath("content-studio.js").is_file()
+    assert static.joinpath("scheduler.js").is_file()
 
 
 def test_job_status_returns_persisted_safe_progress(tmp_path: Path) -> None:
@@ -193,6 +239,7 @@ def test_ui_bootstrap_describes_supported_pipelines_without_sensitive_settings(t
         "job_rename": True,
         "job_delete": True,
         "job_bulk_delete": True,
+        "task_schedules": True,
     }
     pipelines = {pipeline["content_type"]: pipeline for pipeline in payload["pipelines"]}
     assert set(pipelines) == {
@@ -211,20 +258,77 @@ def test_ui_bootstrap_describes_supported_pipelines_without_sensitive_settings(t
         "dry_run",
         "voice_rate",
     }
-    assert {field["name"] for field in pipelines["ai_briefing"]["fields"]} >= {"date", "dry_run", "voice_rate"}
+    script_field = next(field for field in pipelines["script_video"]["fields"] if field["name"] == "script")
+    assert script_field["help"] == "建议 300–600 字；超出建议范围仍可生成和发布，金融内容应包含必要的风险提示。"
+    assert {field["name"] for field in pipelines["finance"]["fields"]} >= {
+        "date",
+        "dry_run",
+        "script_writer",
+    }
+    assert {field["name"] for field in pipelines["ai_briefing"]["fields"]} >= {
+        "date",
+        "dry_run",
+        "voice_rate",
+        "script_writer",
+        "cover_size",
+        "cover_template",
+        "cover_title_position",
+        "cover_background_image",
+        "cover_background_scale",
+        "cover_background_position_x",
+        "cover_background_position_y",
+    }
     voice_rate_field = next(field for field in pipelines["script_video"]["fields"] if field["name"] == "voice_rate")
     assert voice_rate_field["minimum"] == 0.55
     assert voice_rate_field["maximum"] == 1.2
+    ai_briefing_pipeline = pipelines["ai_briefing"]
+    cover_fields = {field["name"]: field for field in ai_briefing_pipeline["fields"]}
+    assert cover_fields["cover_size"]["default"] == "story"
+    assert {option["value"] for option in cover_fields["cover_size"]["options"]} == {
+        "landscape",
+        "portrait",
+        "story",
+    }
+    assert cover_fields["cover_template"]["default"] == "ai-poster"
+    assert cover_fields["cover_title_position"]["default"] == "center"
+    assert cover_fields["cover_background_scale"]["minimum"] == 0.25
+    assert cover_fields["cover_background_scale"]["maximum"] == 3.0
+    assert "封面、视频和发布标题" in cover_fields["title"]["help"]
+    assert ai_briefing_pipeline["external_tools"] == ["Cover-Forge", "MoneyPrinterTurbo"]
     assert {field["name"] for field in pipelines["ai_art"]["fields"]} >= {
         "source_dir",
-        "image_prompt",
+        "process_name",
         "title",
         "group_size",
     }
-    xhs_fields = {field["name"]: field for field in pipelines["xhs_image_note"]["fields"]}
-    assert set(xhs_fields) >= {"source_dir", "image_prompt", "title", "note", "tags", "dry_run"}
-    assert xhs_fields["image_prompt"]["required"] is True
-    assert "3:4" in xhs_fields["image_prompt"]["placeholder"]
+    ai_art_fields = {field["name"]: field for field in pipelines["ai_art"]["fields"]}
+    ai_art_process = ai_art_fields["process_name"]
+    assert ai_art_process["type"] == "select"
+    assert {option["value"] for option in ai_art_process["options"]} >= {"动漫图像比例更改", "日语视觉化"}
+    for _content_type, pipeline in pipelines.items():
+        assert set(pipeline["task_defaults"]) == {"description", "topic"}
+        assert pipeline["task_defaults"]["description"]
+        assert pipeline["task_defaults"]["topic"]
+    xhs_pipeline = pipelines["xhs_image_note"]
+    assert xhs_pipeline["task_defaults"] == {
+        "description": "优化小红书 3:4 图片",
+        "topic": "小红书图片优化",
+    }
+    assert xhs_pipeline["publish_targets"] == []
+    assert xhs_pipeline["external_tools"] == ["Photo-Process"]
+    xhs_fields = {field["name"]: field for field in xhs_pipeline["fields"]}
+    assert set(xhs_fields) >= {"source_dir", "process_name"}
+    assert {"title", "note", "tags", "schedule", "debug", "headed", "dry_run"}.isdisjoint(xhs_fields)
+    xhs_process = xhs_fields["process_name"]
+    assert xhs_process["required"] is True
+    assert xhs_process["type"] == "select"
+    assert {option["value"] for option in xhs_process["options"]} >= {"动漫图像比例更改", "日语视觉化"}
+    japanese_fields = {field["name"]: field for field in pipelines["japanese"]["fields"]}
+    assert japanese_fields["process_name"]["type"] == "select"
+    assert {option["value"] for option in japanese_fields["process_name"]["options"]} >= {
+        "动漫图像比例更改",
+        "日语视觉化",
+    }
     assert payload["auth_required"] is True
     assert payload["publish_enabled"] is False
     serialized = response.text
@@ -245,7 +349,7 @@ pipelines:
       source_dir: G:/Job/Photo-Datasets/input
       archive_dir: G:/Job/Photo-Datasets/done
       failed_dir: G:/Job/Photo-Datasets/failed
-      image_prompt: 请保持主体一致，增强画面质感。
+      process_name: 动漫图像比例更改
       title: AI绘画作品集
       description: AI图像处理作品集
       tags: [AI绘画, 作品集]
@@ -255,11 +359,7 @@ pipelines:
       source_dir: G:/Job/Photo-Datasets/input
       archive_dir: G:/Job/Photo-Datasets/done
       failed_dir: G:/Job/Photo-Datasets/failed
-      image_prompt: 请将图片处理为适合小红书图文的 3:4 竖图。
-      title: 小红书图文标题
-      note: 小红书正文
-      tags: [AI绘画, 小红书图文]
-      dry_run: true
+      process_name: 动漫图像比例更改
 """,
         encoding="utf-8",
     )
@@ -273,22 +373,76 @@ pipelines:
     assert ai_art_fields["source_dir"]["default"] == "G:/Job/Photo-Datasets/input"
     assert ai_art_fields["archive_dir"]["default"] == "G:/Job/Photo-Datasets/done"
     assert ai_art_fields["failed_dir"]["default"] == "G:/Job/Photo-Datasets/failed"
-    assert ai_art_fields["image_prompt"]["default"] == "请保持主体一致，增强画面质感。"
+    assert ai_art_fields["process_name"]["default"] == "动漫图像比例更改"
+    assert ai_art_fields["process_name"]["type"] == "select"
+    assert "动漫图像比例更改" in {option["value"] for option in ai_art_fields["process_name"]["options"]}
     assert ai_art_fields["title"]["default"] == "AI绘画作品集"
     assert ai_art_fields["description"]["default"] == "AI图像处理作品集"
     assert ai_art_fields["tags"]["default"] == ["AI绘画", "作品集"]
     assert ai_art_fields["group_size"]["default"] == 4
-    assert ai_art_fields["image_prompt"]["required"] is True
+    assert ai_art_fields["process_name"]["required"] is True
     xhs_fields = {field["name"]: field for field in pipelines["xhs_image_note"]["fields"]}
     assert xhs_fields["source_dir"]["default"] == "G:/Job/Photo-Datasets/input"
     assert xhs_fields["archive_dir"]["default"] == "G:/Job/Photo-Datasets/done"
     assert xhs_fields["failed_dir"]["default"] == "G:/Job/Photo-Datasets/failed"
-    assert xhs_fields["image_prompt"]["default"] == "请将图片处理为适合小红书图文的 3:4 竖图。"
-    assert xhs_fields["title"]["default"] == "小红书图文标题"
-    assert xhs_fields["note"]["default"] == "小红书正文"
-    assert xhs_fields["tags"]["default"] == ["AI绘画", "小红书图文"]
-    assert xhs_fields["dry_run"]["default"] is True
-    assert xhs_fields["image_prompt"]["required"] is True
+    assert xhs_fields["process_name"]["default"] == "动漫图像比例更改"
+    assert xhs_fields["process_name"]["type"] == "select"
+    assert "动漫图像比例更改" in {option["value"] for option in xhs_fields["process_name"]["options"]}
+    assert {"title", "note", "tags", "dry_run"}.isdisjoint(xhs_fields)
+    assert xhs_fields["process_name"]["required"] is True
+
+
+def test_ui_bootstrap_discovers_photo_process_options_and_keeps_configured_default(tmp_path: Path, monkeypatch) -> None:
+    defaults = tmp_path / "pipeline.defaults.yaml"
+    defaults.write_text(
+        """
+enabled: true
+pipelines:
+  ai_art:
+    params:
+      process_name: 配置里的旧名称
+""",
+        encoding="utf-8",
+    )
+
+    def fake_run_command(command, *, cwd, timeout, env):
+        assert command[-2:] == ["list-processes", "--json"]
+        assert cwd == tmp_path / "photo-process"
+        assert timeout == 30
+        assert env == {"PYTHONIOENCODING": "utf-8"}
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "success": True,
+                    "processes": [
+                        {"name": "新图文流程", "description": "内部细节不暴露给 AI Pipeline"},
+                        {"name": "日语视觉化"},
+                    ],
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr("content_pipeline.api.ui_schema.run_command", fake_run_command)
+
+    with _client(
+        tmp_path,
+        pipeline_defaults_file=defaults,
+        photo_process_dir=tmp_path / "photo-process",
+        photo_process_python=tmp_path / "python.exe",
+    ) as client:
+        response = client.get("/ui/bootstrap", headers=_bearer())
+
+    assert response.status_code == 200
+    pipelines = {pipeline["content_type"]: pipeline for pipeline in response.json()["pipelines"]}
+    ai_art_fields = {field["name"]: field for field in pipelines["ai_art"]["fields"]}
+    options = ai_art_fields["process_name"]["options"]
+    assert ai_art_fields["process_name"]["type"] == "select"
+    assert ai_art_fields["process_name"]["default"] == "配置里的旧名称"
+    assert {option["value"] for option in options} == {"配置里的旧名称", "新图文流程", "日语视觉化"}
+    assert "内部细节" not in response.text
 
 
 def test_console_session_can_preflight_with_csrf(tmp_path: Path) -> None:
@@ -322,7 +476,11 @@ def test_job_delete_api_removes_terminal_jobs_and_blocks_running_jobs(tmp_path: 
         deleted = client.delete(f"/jobs/{terminal}", headers=_bearer())
         missing = client.get(f"/status/{terminal}", headers=_bearer())
         blocked = client.delete(f"/jobs/{running}", headers=_bearer())
-        batch = client.post("/jobs/batch-delete", headers=_bearer(), json={"task_ids": [second, running, terminal]})
+        batch = client.post(
+            "/jobs/batch-delete",
+            headers=_bearer(),
+            json={"task_ids": [" " + second + " ", second, running, terminal]},
+        )
         listed = client.get("/jobs", headers=_bearer()).json()["jobs"]
 
     assert renamed.status_code == 200
@@ -338,6 +496,23 @@ def test_job_delete_api_removes_terminal_jobs_and_blocks_running_jobs(tmp_path: 
     assert batch.json()["blocked"] == [running]
     assert batch.json()["not_found"] == [terminal]
     assert {job["task_id"] for job in listed} == {running}
+
+
+def test_job_batch_delete_rejects_extra_fields_and_invalid_ids(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        extra = client.post(
+            "/jobs/batch-delete",
+            headers=_bearer(),
+            json={"task_ids": ["0" * 32], "force": True},
+        )
+        invalid_id = client.post(
+            "/jobs/batch-delete",
+            headers=_bearer(),
+            json={"task_ids": ["not-a-task-id"]},
+        )
+
+    assert extra.status_code == 422
+    assert invalid_id.status_code == 422
 
 
 def test_task_preflight_normalizes_params_and_returns_bound_fingerprint(tmp_path: Path) -> None:
@@ -359,6 +534,65 @@ def test_task_preflight_normalizes_params_and_returns_bound_fingerprint(tmp_path
     assert normalized.params["dry_run"] is True
     assert payload["task_fingerprint"] == task_fingerprint(normalized)
     assert any("安全干运行" in warning for warning in payload["warnings"])
+
+
+@pytest.mark.parametrize("script", ["短稿", "长" * 601])
+def test_script_video_preflight_warns_but_remains_valid_outside_recommended_length(tmp_path: Path, script: str) -> None:
+    task = {
+        "description": "口播稿建议字数预检",
+        "content_type": "script_video",
+        "publish": False,
+        "params": {"title": "今日资讯", "script": script, "dry_run": False},
+    }
+
+    with _client(tmp_path) as client:
+        response = client.post("/validate-task", headers=_bearer(), json=task)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["valid"] is True
+    assert payload["task"]["params"]["script"] == script
+    assert any(
+        f"当前为 {len(script)} 字" in warning and "超出建议的 300–600 字范围，仍可生成和发布" in warning
+        for warning in payload["warnings"]
+    )
+
+
+@pytest.mark.parametrize(
+    "task_path",
+    sorted(path for tier in ("dry-run", "local", "publish") for path in Path("examples/tasks", tier).glob("*.json")),
+    ids=lambda path: path.as_posix(),
+)
+def test_task_preflight_accepts_current_packaged_examples(task_path: Path, tmp_path: Path) -> None:
+    task = json.loads(task_path.read_text(encoding="utf-8"))
+    settings_overrides = {"web_publish_enabled": True} if task.get("publish") else {}
+
+    with _client(tmp_path, **settings_overrides) as client:
+        response = client.post("/validate-task", headers=_bearer(), json=task)
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    normalized = TaskInput.model_validate(payload["task"])
+    assert payload["valid"] is True
+    assert payload["task_fingerprint"] == task_fingerprint(normalized)
+
+
+def test_task_preflight_rejects_unknown_anime_params(tmp_path: Path) -> None:
+    task = {
+        "description": "动漫参数污染",
+        "content_type": "anime",
+        "publish": False,
+        "params": {"script": "第一幕：安全测试。", "dry_run": True, "unexpected": "value"},
+    }
+    with _client(tmp_path) as client:
+        response = client.post("/validate-task", headers=_bearer(), json=task)
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["code"] == "task_validation_failed"
+    assert detail["errors"] == [
+        {"field": "unexpected", "message": "Extra inputs are not permitted", "type": "extra_forbidden"}
+    ]
 
 
 def test_request_validation_does_not_echo_task_body(tmp_path: Path) -> None:
@@ -387,7 +621,7 @@ def test_task_preflight_returns_sanitized_field_errors(tmp_path: Path) -> None:
     assert response.status_code == 422
     detail = response.json()["detail"]
     assert detail["code"] == "task_validation_failed"
-    assert {error["field"] for error in detail["errors"]} == {"image_prompt", "title"}
+    assert {error["field"] for error in detail["errors"]} == {"process_name", "title"}
     assert "G:/private/source" not in response.text
     assert all(set(error) == {"field", "message", "type"} for error in detail["errors"])
 
@@ -449,6 +683,46 @@ def _ready_briefing_draft(tmp_path: Path) -> str:
     return draft_id
 
 
+@pytest.mark.parametrize("script", ["短稿", "长" * 601])
+def test_content_studio_creates_video_task_outside_recommended_length(tmp_path: Path, script: str) -> None:
+    from content_pipeline.content_studio.models import ContentDraft, ResearchSource
+    from content_pipeline.content_studio.store import ContentDraftStore
+
+    draft_id = "c" * 32
+    ContentDraftStore(tmp_path / "sensitive-output-path")._save_unlocked(
+        ContentDraft(
+            draft_id=draft_id,
+            template_id="ai_briefing_90s",
+            title="区间外口播",
+            script=script,
+            status="ready",
+            revision=1,
+            research=[
+                ResearchSource(
+                    source_id="ai-briefing",
+                    label="AI 简报",
+                    skill_id="AI_BRIEFING_MARKDOWN",
+                    status="succeeded",
+                )
+            ],
+        )
+    )
+    app = create_app(_settings(tmp_path))
+    app.state.orchestrator.run = lambda _task_id: None
+
+    with TestClient(app, base_url="http://testserver", client=("127.0.0.1", 50000)) as client:
+        response = client.post(
+            f"/content/drafts/{draft_id}/video",
+            headers=_bearer(),
+            json={"revision": 1, "dry_run": False},
+        )
+        status = client.get(f"/status/{response.json()['task_id']}", headers=_bearer())
+
+    assert response.status_code == 202
+    assert status.status_code == 200
+    assert status.json()["task"]["params"]["script"] == script
+
+
 def test_content_studio_video_defaults_to_local_only(tmp_path: Path) -> None:
     app = create_app(_settings(tmp_path))
     app.state.orchestrator.run = lambda _task_id: None
@@ -475,7 +749,7 @@ def test_content_studio_video_defaults_to_local_only(tmp_path: Path) -> None:
     assert snapshot["task"]["params"]["voice_rate"] == 0.9
 
 
-def test_content_studio_never_publishes_during_generation_and_records_provenance(tmp_path: Path) -> None:
+def test_content_studio_video_generation_rejects_publish_fields(tmp_path: Path) -> None:
     app = create_app(_settings(tmp_path, web_publish_enabled=True))
     app.state.orchestrator.run = lambda _task_id: None
     with TestClient(app, base_url="http://testserver", client=("127.0.0.1", 50000)) as client:
@@ -491,16 +765,46 @@ def test_content_studio_never_publishes_during_generation_and_records_provenance
             },
         )
 
-    assert response.status_code == 202
-    task_id = response.json()["task_id"]
-    snapshot = json.loads(
-        (tmp_path / "sensitive-output-path" / "jobs" / task_id / "status.json").read_text(encoding="utf-8")
-    )
-    assert snapshot["task"]["publish"] is False
-    assert snapshot["task"]["publish_targets"] == []
-    assert snapshot["task"]["origin"] == "content_studio"
-    assert snapshot["task"]["source_draft_id"] == draft_id
-    assert snapshot["task"]["source_draft_revision"] == 1
+    assert response.status_code == 422
+    error_fields = {error["field"] for error in response.json()["detail"]["errors"]}
+    assert "publish" in error_fields
+    assert "publish_targets" in error_fields
+
+
+def test_content_draft_requests_reject_extra_fields(tmp_path: Path) -> None:
+    draft_id = _ready_briefing_draft(tmp_path)
+    with _client(tmp_path) as client:
+        create = client.post(
+            "/content/drafts",
+            headers=_bearer(),
+            json={"title": "今日金融资讯", "unexpected": True},
+        )
+        update = client.patch(
+            f"/content/drafts/{draft_id}",
+            headers=_bearer(),
+            json={"revision": 1, "title": "今日金融资讯", "script": "已编辑", "status": "ready"},
+        )
+        blank_script = client.patch(
+            f"/content/drafts/{draft_id}",
+            headers=_bearer(),
+            json={"revision": 1, "title": "今日金融资讯", "script": "   "},
+        )
+        refresh = client.post(
+            f"/content/drafts/{draft_id}/refresh",
+            headers=_bearer(),
+            json={"revision": 1, "force": True},
+        )
+        batch_delete = client.post(
+            "/content/drafts/batch-delete",
+            headers=_bearer(),
+            json={"draft_ids": [draft_id], "force": True},
+        )
+
+    assert create.status_code == 422
+    assert update.status_code == 422
+    assert blank_script.status_code == 422
+    assert refresh.status_code == 422
+    assert batch_delete.status_code == 422
 
 
 def test_crud_route_contract_registers_expected_methods(tmp_path: Path) -> None:

@@ -8,6 +8,8 @@ from content_pipeline.tools.narrated_mpt_client import (
     call_narrated_mpt,
 )
 
+__all__ = ["FinanceMptResult", "call_finance_mpt"]
+
 FinanceMptResult = NarratedMptResult
 
 

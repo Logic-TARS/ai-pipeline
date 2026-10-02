@@ -1,6 +1,8 @@
-"""ai-popline capabilities -- list available content pipelines."""
+"""ai-pipeline capabilities -- list available content pipelines."""
 
 from __future__ import annotations
+
+__all__ = ["run_capabilities"]
 
 
 def run_capabilities() -> int:
@@ -8,7 +10,7 @@ def run_capabilities() -> int:
     from content_pipeline.pipelines.registry import list_pipelines
 
     pipelines = list_pipelines()
-    print("AI Popline -- Available Pipelines")
+    print("AI Pipeline -- Available Pipelines")
     print("=" * 65)
     for cap in sorted(pipelines, key=lambda m: m.content_type):
         print(f"\n  [{cap.content_type}]")

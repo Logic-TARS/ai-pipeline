@@ -12,6 +12,17 @@ from urllib.parse import parse_qs, urlparse
 
 from content_pipeline.photo_process_debug import inspect_visible_chrome_windows
 
+__all__ = [
+    "BrowserHelperHandler",
+    "DEFAULT_CHROME_PATHS",
+    "DEFAULT_HOST",
+    "DEFAULT_PORT",
+    "find_chrome",
+    "main",
+    "open_visible_chrome",
+    "serve",
+]
+
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8767
 DEFAULT_CHROME_PATHS = [
@@ -64,12 +75,12 @@ def open_visible_chrome(
 
 
 class BrowserHelperHandler(BaseHTTPRequestHandler):
-    server_version = "AIPoplineDesktopBrowserHelper/1.0"
+    server_version = "AIPipelineDesktopBrowserHelper/1.0"
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/health":
-            self._send_json({"ok": True, "service": "ai-popline-desktop-browser-helper"})
+            self._send_json({"ok": True, "service": "ai-pipeline-desktop-browser-helper"})
             return
         if parsed.path == "/open":
             query = parse_qs(parsed.query)
@@ -105,9 +116,15 @@ def serve(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="AI Popline desktop browser helper")
+    parser = argparse.ArgumentParser(description="AI Pipeline desktop browser helper")
     parser.add_argument("--host", default=DEFAULT_HOST)
-    parser.add_argument("--port", type=int, default=int(os.getenv("AI_POPLINE_BROWSER_HELPER_PORT", DEFAULT_PORT)))
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(
+            os.getenv("AI_PIPELINE_BROWSER_HELPER_PORT", os.getenv("AI_POPLINE_BROWSER_HELPER_PORT", DEFAULT_PORT))
+        ),
+    )
     args = parser.parse_args(argv)
     serve(host=args.host, port=args.port)
     return 0

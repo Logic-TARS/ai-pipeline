@@ -1,15 +1,34 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import re
+import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 
 from content_pipeline.job_store import JobStore
-from content_pipeline.models import DeferredPublishInput, JobSnapshot
+from content_pipeline.models import DeferredPublishInput, JobSnapshot, PipelineStep
 from content_pipeline.settings import Settings
 from content_pipeline.tools.sau_client import call_sau_target
 
-SUPPORTED_SCRIPT_VIDEO_TARGETS = ("douyin", "kuaishou")
+__all__ = [
+    "ACTIVE_PUBLICATION_STATUSES",
+    "PUBLICATION_STATE_LABELS",
+    "SUPPORTED_SCRIPT_VIDEO_TARGETS",
+    "PublicationEligibilityError",
+    "is_content_studio_job",
+    "list_publish_account_options",
+    "publication_readiness",
+    "publication_summary",
+    "resolve_guarded_video",
+    "run_deferred_publication",
+    "sha256_file",
+    "validate_deferred_publish_request",
+]
+
+SUPPORTED_SCRIPT_VIDEO_TARGETS = ("douyin", "kuaishou", "tencent")
 ACTIVE_PUBLICATION_STATUSES = {"queued", "running"}
 PUBLICATION_STATE_LABELS = {
     "waiting_generation": "待生成",
@@ -26,6 +45,63 @@ class PublicationEligibilityError(ValueError):
     """Raised when a completed job cannot safely reuse its generated video."""
 
 
+PUBLISH_ACCOUNT_CACHE_SECONDS = 60.0
+_account_options_cache: tuple[float, dict[str, list[dict[str, str]]]] | None = None
+
+
+def list_publish_account_options(settings: Settings) -> dict[str, list[dict[str, str]]]:
+    """Return known SAU accounts per supported platform, cached briefly.
+
+    The data comes from the SAU account-center bridge. Any failure (bridge
+    offline, unauthorized, malformed payload) yields an empty mapping so the
+    web UI can fall back to free-text account inputs.
+    """
+    global _account_options_cache
+    now = time.monotonic()
+    if _account_options_cache is not None and now - _account_options_cache[0] < PUBLISH_ACCOUNT_CACHE_SECONDS:
+        cached = _account_options_cache[1]
+    else:
+        cached = _fetch_publish_account_options(settings)
+        _account_options_cache = (now, cached)
+    return {platform: [dict(item) for item in items] for platform, items in cached.items()}
+
+
+def _fetch_publish_account_options(settings: Settings) -> dict[str, list[dict[str, str]]]:
+    base_url = settings.sau_bridge_url.strip().rstrip("/")
+    if not base_url:
+        return {}
+    headers = {"Accept": "application/json"}
+    token = settings.sau_bridge_token.get_secret_value()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(f"{base_url}/api/accounts", headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=3) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return {}
+    accounts = payload.get("accounts") if isinstance(payload, dict) else None
+    if not isinstance(accounts, list):
+        return {}
+    options: dict[str, list[dict[str, str]]] = {}
+    for item in accounts:
+        if not isinstance(item, dict):
+            continue
+        platform = str(item.get("platform") or "")
+        account = str(item.get("account") or "").strip()
+        if platform not in SUPPORTED_SCRIPT_VIDEO_TARGETS or not account:
+            continue
+        entry = {
+            "account": account,
+            "status": str(item.get("status") or ""),
+            "status_label": str(item.get("status_label") or ""),
+        }
+        bucket = options.setdefault(platform, [])
+        if all(existing["account"] != account for existing in bucket):
+            bucket.append(entry)
+    return options
+
+
 def is_content_studio_job(snapshot: JobSnapshot) -> bool:
     """Recognize current jobs and legacy content-studio jobs created before provenance fields existed."""
     return snapshot.task.origin == "content_studio" or (
@@ -36,22 +112,8 @@ def is_content_studio_job(snapshot: JobSnapshot) -> bool:
 
 def publication_summary(snapshot: JobSnapshot) -> dict[str, Any]:
     """Return an evidence-based publication state without changing generation status."""
-    content_studio_job = is_content_studio_job(snapshot)
-    if not content_studio_job:
-        return {
-            "state": "not_applicable",
-            "label": PUBLICATION_STATE_LABELS["not_applicable"],
-            "message": "该任务不使用内容工作台的独立发布流程。",
-            "content_studio_job": False,
-            "active": False,
-            "has_published": False,
-            "needs_attention": False,
-            "latest_attempt_id": None,
-            "latest_attempt_status": None,
-            "completed_at": None,
-            "targets": [],
-            "published_targets": [],
-        }
+    if not is_content_studio_job(snapshot):
+        return _inline_publication_summary(snapshot)
 
     attempts = snapshot.publication_attempts
     successful_targets: dict[tuple[str, str], dict[str, Any]] = {}
@@ -139,6 +201,130 @@ def publication_summary(snapshot: JobSnapshot) -> dict[str, Any]:
     }
 
 
+def _inline_publication_summary(snapshot: JobSnapshot) -> dict[str, Any]:
+    """Summarize in-pipeline publishing for jobs outside the content-studio flow."""
+    accounts = {target.platform: target.account for target in snapshot.task.publish_targets}
+    results = {
+        str(platform): result
+        for platform, result in snapshot.artifacts.publish_results.items()
+        if isinstance(result, dict)
+    }
+    upload = snapshot.artifacts.upload_result or {}
+    if not results and isinstance(upload.get("targets"), dict):
+        results = {str(platform): result for platform, result in upload["targets"].items() if isinstance(result, dict)}
+    if not results and isinstance(upload.get("groups"), dict):
+        for group_results in upload["groups"].values():
+            if isinstance(group_results, dict):
+                results.update(
+                    {str(platform): result for platform, result in group_results.items() if isinstance(result, dict)}
+                )
+
+    summary = {
+        "state": "not_published",
+        "label": PUBLICATION_STATE_LABELS["not_published"],
+        "message": "该任务未请求发布，仅生成内容。",
+        "content_studio_job": False,
+        "active": False,
+        "has_published": False,
+        "needs_attention": False,
+        "latest_attempt_id": None,
+        "latest_attempt_status": None,
+        "completed_at": snapshot.finished_at,
+        "targets": [],
+        "published_targets": [],
+    }
+    if not snapshot.task.publish or upload.get("skipped"):
+        if upload.get("skipped") and upload.get("reason") not in {None, "publish_not_requested"}:
+            summary["message"] = f"该流水线未执行发布（{upload['reason']}）。"
+        return summary
+
+    real_results = {platform: result for platform, result in results.items() if not result.get("dry_run")}
+    if not real_results:
+        if results:
+            summary["message"] = "安全干运行产物未真实发布。"
+        elif snapshot.status in {"queued", "running"}:
+            if snapshot.current_step == PipelineStep.UPLOAD:
+                summary.update(
+                    state="publishing",
+                    label=PUBLICATION_STATE_LABELS["publishing"],
+                    message="正在向目标平台发布，请等待平台返回结果。",
+                    active=True,
+                )
+            else:
+                summary["message"] = "已请求发布，视频生成完成后将自动发布。"
+        else:
+            summary["message"] = "任务未成功完成，发布未执行。"
+        return summary
+
+    targets = [
+        _publication_target_summary(
+            platform=platform,
+            account=accounts.get(platform, ""),
+            attempt_status="succeeded",
+            result=result,
+        )
+        for platform, result in real_results.items()
+    ]
+    published = [target for target in targets if target["success"]]
+    summary["targets"] = targets
+    summary["published_targets"] = published
+    summary["has_published"] = bool(published)
+
+    if snapshot.status in {"queued", "running"} and snapshot.current_step == PipelineStep.UPLOAD:
+        summary.update(
+            state="publishing",
+            label=PUBLICATION_STATE_LABELS["publishing"],
+            message="正在向目标平台发布，已有部分平台返回结果。",
+            active=True,
+        )
+    elif len(published) == len(targets):
+        summary.update(
+            state="published",
+            label=PUBLICATION_STATE_LABELS["published"],
+            message="流水线内发布成功，平台已返回发布凭证。",
+        )
+    elif published:
+        summary.update(
+            state="partial",
+            label=PUBLICATION_STATE_LABELS["partial"],
+            message="流水线内部分平台发布成功，仍有平台发布失败。",
+            needs_attention=True,
+        )
+    else:
+        summary.update(
+            state="failed",
+            label=PUBLICATION_STATE_LABELS["failed"],
+            message="流水线内发布未收到任何平台的成功凭证。",
+            needs_attention=True,
+        )
+    return summary
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+_WHITESPACE_RE = re.compile(r"\s+")
+_SAU_RESULT_MARKER = "SAU_UPLOAD_RESULT:"
+PUBLISH_ERROR_MAX_CHARS = 300
+
+
+def _clean_publish_error(error: Any) -> str | None:
+    """Reduce raw uploader output to a short, readable message."""
+    if not error:
+        return None
+    text = str(error)
+    if _SAU_RESULT_MARKER in text:
+        candidate = text.split(_SAU_RESULT_MARKER, 1)[1].split("\n", 1)[0]
+        try:
+            payload = json.loads(candidate)
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict) and payload.get("error"):
+            text = str(payload["error"])
+    text = _WHITESPACE_RE.sub(" ", _ANSI_ESCAPE_RE.sub("", text)).strip()
+    if len(text) > PUBLISH_ERROR_MAX_CHARS:
+        text = text[:PUBLISH_ERROR_MAX_CHARS].rstrip() + "…"
+    return text or None
+
+
 def _publication_target_summary(
     *,
     platform: str,
@@ -159,7 +345,7 @@ def _publication_target_summary(
         status = "published" if success else "failed"
         visibility = result.get("delivery_status") or result.get("visibility")
         proof = result.get("publication_proof") or result.get("draft_proof") or result.get("private_visibility_proof")
-        error = result.get("error")
+        error = _clean_publish_error(result.get("error"))
     return {
         "platform": platform,
         "account": account,
@@ -172,7 +358,13 @@ def _publication_target_summary(
     }
 
 
-def publication_readiness(snapshot: JobSnapshot, store: JobStore, *, publish_enabled: bool) -> dict[str, Any]:
+def publication_readiness(
+    snapshot: JobSnapshot,
+    store: JobStore,
+    *,
+    publish_enabled: bool,
+    account_options: dict[str, list[dict[str, str]]] | None = None,
+) -> dict[str, Any]:
     reasons: list[str] = []
     content_type = snapshot.route.content_type if snapshot.route else snapshot.task.content_type
     params = snapshot.route.params if snapshot.route else snapshot.task.params
@@ -204,13 +396,15 @@ def publication_readiness(snapshot: JobSnapshot, store: JobStore, *, publish_ena
         "reasons": reasons,
         "publish_enabled": publish_enabled,
         "supported_platforms": list(SUPPORTED_SCRIPT_VIDEO_TARGETS),
+        "account_options": account_options or {},
         "defaults": {
             "title": str(params.get("title") or snapshot.task.topic or snapshot.task.description),
             "description": str(params.get("description") or ""),
             "tags": list(params.get("tags") or []),
             "accounts": {
                 "douyin": str(params.get("douyin_account") or "金融破壁人"),
-                "kuaishou": str(params.get("kuaishou_account") or "破壁人"),
+                "kuaishou": str(params.get("kuaishou_account") or "搞AI的罗辑同学"),
+                "tencent": str(params.get("tencent_account") or "每日金融摘要"),
             },
         },
         "video_ready": video is not None,
@@ -238,10 +432,13 @@ def resolve_guarded_video(snapshot: JobSnapshot, store: JobStore) -> Path:
     video = snapshot.artifacts.video
     if video is None:
         raise PublicationEligibilityError("任务没有可发布的视频产物。")
+    job_dir = store.job_dir(snapshot.task_id)
+    if job_dir.is_symlink() or not job_dir.is_dir():
+        raise PublicationEligibilityError("任务目录不存在或不可用。")
+    job_root = job_dir.resolve()
     resolved = video.resolve()
-    job_dir = store.job_dir(snapshot.task_id).resolve()
     try:
-        resolved.relative_to(job_dir)
+        resolved.relative_to(job_root)
     except ValueError as exc:
         raise PublicationEligibilityError("视频产物不在受保护的任务目录内。") from exc
     if not resolved.is_file():

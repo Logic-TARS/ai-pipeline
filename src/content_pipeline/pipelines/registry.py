@@ -44,6 +44,18 @@ PipelineFunc = Callable[[PipelineContext], None]
 PIPELINE_REGISTRY: dict[str, PipelineFunc] = {}
 PIPELINE_METADATA: dict[str, PipelineMeta] = {}
 
+__all__ = [
+    "PIPELINE_METADATA",
+    "PIPELINE_REGISTRY",
+    "PipelineContext",
+    "PipelineFunc",
+    "PipelineMeta",
+    "get_pipeline",
+    "get_pipeline_meta",
+    "list_pipelines",
+    "register",
+]
+
 
 def _uses_pipeline_context(fn: Callable) -> bool:
     """Return True if *fn* accepts a single PipelineContext argument."""

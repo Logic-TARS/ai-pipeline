@@ -1,13 +1,13 @@
 # ZeroTier Web Access Runbook
 
-AI Popline supports a single operator on loopback and, after the security gate is configured, authenticated devices on one explicitly configured ZeroTier network. This does not expose MCP, Photo-Process, the desktop browser helper, MPT, SAU, or arbitrary workstation files.
+AI Pipeline supports a single operator on loopback and, after the security gate is configured, authenticated devices on one explicitly configured ZeroTier network. This does not expose MCP, Photo-Process, the desktop browser helper, MPT, SAU, or arbitrary workstation files.
 
 ## Prerequisites
 
 - The server and each client are authorized members of the same private ZeroTier network.
 - The server has a stable managed ZeroTier IP.
 - The chosen TCP port is not exposed by router port forwarding, UPnP, a public reverse proxy, or a wildcard firewall rule.
-- AI Popline is initially stopped or bound to `127.0.0.1` while configuration is prepared.
+- AI Pipeline is initially stopped or bound to `127.0.0.1` while configuration is prepared.
 
 On the Windows server, inspect the ZeroTier interface:
 
@@ -49,7 +49,7 @@ Protect the private key with Windows ACLs and never commit `data/` or the key. I
 
 ZeroTier encrypts peer traffic, but `WEB_ALLOW_ZEROTIER_HTTP=true` is only an explicit restricted-mode exception when HTTPS cannot yet be deployed. HTTP mode does not set Secure cookies or HSTS and should not be treated as the completed configuration.
 
-## Configure AI Popline
+## Configure AI Pipeline
 
 Example `.env` values for a server at `10.147.17.5/24`:
 
@@ -65,13 +65,14 @@ WEB_API_TOKEN=<different-independent-random-value>
 WEB_SESSION_SECRET=<third-independent-random-value>
 WEB_SESSION_TTL_SECONDS=604800
 WEB_PUBLISH_ENABLED=false
-WEB_PUBLISH_REAUTH_SECONDS=300
+# Shorten this to require more recent authentication for publishing.
+WEB_PUBLISH_REAUTH_SECONDS=604800
 WEB_TLS_CERTFILE=G:\Job\ai-popline\data\web-tls\zerotier.crt
 WEB_TLS_KEYFILE=G:\Job\ai-popline\data\web-tls\zerotier.key
 WEB_ALLOW_ZEROTIER_HTTP=false
 ```
 
-Use the exact assigned address. Wildcard listeners (`0.0.0.0`, `::`) are rejected by `ai-popline serve`, and a remote bind is rejected unless its address belongs to `WEB_ALLOWED_NETWORKS`, authentication is configured, and TLS or the explicit HTTP exception is selected.
+Use the exact assigned address. Wildcard listeners (`0.0.0.0`, `::`) are rejected by `ai-pipeline serve`, and a remote bind is rejected unless its address belongs to `WEB_ALLOWED_NETWORKS`, authentication is configured, and TLS or the explicit HTTP exception is selected.
 
 ## Configure Windows Firewall
 
@@ -79,7 +80,7 @@ Allow only the ZeroTier local address, managed peer CIDR, and selected port:
 
 ```powershell
 New-NetFirewallRule `
-  -DisplayName "AI Popline ZeroTier 8080" `
+  -DisplayName "AI Pipeline ZeroTier 8080" `
   -Direction Inbound -Action Allow -Protocol TCP `
   -LocalAddress 10.147.17.5 -LocalPort 8080 `
   -RemoteAddress 10.147.17.0/24
@@ -90,8 +91,8 @@ Review existing broad allow rules for Python, Uvicorn, or port 8080 and remove o
 ## Validate and start
 
 ```powershell
-ai-popline doctor
-ai-popline serve
+ai-pipeline doctor
+ai-pipeline serve
 ```
 
 The CLI verifies that the bind address is assigned to a local interface, rejects wildcard binding, checks the remote security policy, disables proxy-header trust, and loads configured TLS files. Do not use a direct wildcard `uvicorn` command for ZeroTier access.
@@ -100,6 +101,7 @@ From an authorized ZeroTier client, open `https://10.147.17.5:8080/` to use the 
 
 ```powershell
 Invoke-RestMethod https://10.147.17.5:8080/health
+Invoke-RestMethod https://10.147.17.5:8080/monitor/uptime-kuma
 $headers = @{ Authorization = "Bearer <WEB_API_TOKEN>" }
 Invoke-RestMethod https://10.147.17.5:8080/ready -Headers $headers
 ```
@@ -107,6 +109,8 @@ Invoke-RestMethod https://10.147.17.5:8080/ready -Headers $headers
 Expected behavior:
 
 - `/health` returns only `{"status":"ok"}`.
+- `/monitor/uptime-kuma` returns only `{"ok":true,"service":"ai-pipeline","status":"up","app":"AI Pipeline"}` and stays unauthenticated so Uptime Kuma can poll it without credentials.
+- authenticated `/ready` returns only redacted flags: `data_dir_available`, `profiles_available`, and `pipeline_defaults_available`.
 - protected endpoints return `401` without a valid session or bearer token.
 - peers outside loopback and `WEB_ALLOWED_NETWORKS` return `403`.
 - wrong Host or Origin values are rejected.
@@ -124,14 +128,14 @@ REST automation should normally use `Authorization: Bearer <WEB_API_TOKEN>` inst
 
 `WEB_PUBLISH_ENABLED=false` independently blocks Web/API publishing even when task JSON contains `"publish": true`. Keep it false until generated artifacts have been reviewed and publishing through the remote API is intentionally required.
 
-When enabled, a publish request without confirmation returns HTTP `409` with a task fingerprint and a required value such as `PUBLISH:<fingerprint>`. Resubmit the unchanged task with that exact value in `X-AI-Popline-Publish-Confirmation`; changing any task field changes the fingerprint, and session-authenticated publishing also requires a recent login.
+When enabled, a publish request without confirmation returns HTTP `409` with a task fingerprint and a required value such as `PUBLISH:<fingerprint>`. Resubmit the unchanged task with that exact value in `X-AI-Pipeline-Publish-Confirmation`; changing any task field changes the fingerprint, and session-authenticated publishing also requires a recent login.
 
 These controls do not replace pipeline privacy enforcement, uploader deduplication, or artifact review.
 
 ## Emergency disable
 
-1. Stop the `ai-popline serve` process.
-2. Disable the firewall rule: `Disable-NetFirewallRule -DisplayName "AI Popline ZeroTier 8080"`.
+1. Stop the `ai-pipeline serve` process.
+2. Disable the firewall rule: `Disable-NetFirewallRule -DisplayName "AI Pipeline ZeroTier 8080"`.
 3. Set `WEB_BIND_HOST=127.0.0.1`, clear `WEB_ALLOWED_NETWORKS`, and set `WEB_PUBLISH_ENABLED=false`.
 4. Rotate the admin token, API token, and session secret if any credential may be exposed.
 5. Deauthorize the affected client in ZeroTier Central before restarting on loopback.

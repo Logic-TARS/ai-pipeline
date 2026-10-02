@@ -6,13 +6,30 @@ from typing import Any
 
 from content_pipeline.tools.narrated_mpt_client import looks_like_file_reference
 
+__all__ = [
+    "CONTENT_STUDIO_FINANCE_DISCLAIMER",
+    "CONTENT_STUDIO_MAX_CHARS",
+    "CONTENT_STUDIO_MIN_CHARS",
+    "DAILY_FINANCE_DISCLAIMER",
+    "FINANCE_MAX_CHARS",
+    "FINANCE_MIN_CHARS",
+    "FINANCE_RISK_NOTE",
+    "FINANCE_SECTION_LABELS",
+    "FinanceScriptError",
+    "build_daily_markdown_script",
+    "build_structured_finance_script",
+    "clean_markdown",
+    "trim_complete",
+    "validate_daily_finance_script",
+]
+
 CONTENT_STUDIO_FINANCE_DISCLAIMER = "以上内容仅为市场信息整理，不构成投资建议。"
 DAILY_FINANCE_DISCLAIMER = "以上内容仅为市场信息整理和个人观点，不构成任何投资建议。"
 FINANCE_RISK_NOTE = "面对市场波动，请结合自身投资期限、仓位水平和风险承受能力审慎决策。"
-FINANCE_MIN_CHARS = 350
-FINANCE_MAX_CHARS = 500
-CONTENT_STUDIO_MIN_CHARS = 380
-CONTENT_STUDIO_MAX_CHARS = 430
+FINANCE_MIN_CHARS = 300
+FINANCE_MAX_CHARS = 600
+CONTENT_STUDIO_MIN_CHARS = 300
+CONTENT_STUDIO_MAX_CHARS = 600
 GENERIC_FILLER_MARKERS = (
     "资料不完整时",
     "黄金通常同时受到",
@@ -146,7 +163,7 @@ def _append_until(parts: list[str], candidates: list[str], min_chars: int, tail:
 
 def _validate_content_studio_finance_script(script: str) -> None:
     if not CONTENT_STUDIO_MIN_CHARS <= len(script) <= CONTENT_STUDIO_MAX_CHARS:
-        raise FinanceScriptError(f"金融初稿需要约400字，当前为 {len(script)} 字")
+        raise FinanceScriptError(f"金融初稿需要 300-600 字，当前为 {len(script)} 字")
     if any(marker in script for marker in GENERIC_FILLER_MARKERS):
         raise FinanceScriptError("金融初稿包含通用填充话术，缺少可播信息")
     if "不构成投资建议" not in script:
@@ -186,7 +203,7 @@ def _finalize_script(
 def validate_daily_finance_script(script: str) -> None:
     if not FINANCE_MIN_CHARS <= len(script) <= FINANCE_MAX_CHARS:
         raise FinanceScriptError(
-            f"finance narration must contain 350-500 characters; generated {len(script)} characters"
+            f"finance narration must contain 300-600 characters; generated {len(script)} characters"
         )
     normalized = script.replace(" ", "")
     if (
@@ -344,7 +361,7 @@ def build_daily_markdown_script(
         disclaimer=DAILY_FINANCE_DISCLAIMER,
         min_chars=min_chars,
         max_chars=max_chars,
-        length_error="finance narration must contain 350-500 characters; generated {length} characters",
+        length_error="finance narration must contain 300-600 characters; generated {length} characters",
         fillers=[
             "短期盘面只代表当天资金偏好，不能直接外推为中长期趋势。",
             "估值、成交和政策预期需要放在同一时间维度里交叉验证。",
@@ -373,9 +390,7 @@ def build_structured_finance_script(
     central_bank = _as_dict(quotes.get("central_bank_gold"))
     gold_bits = []
     if futures.get("close") is not None:
-        text = (
-            f"{futures.get('date', '最新交易日')}黄金期货主力收于{futures['close']}元每克"
-        )
+        text = f"{futures.get('date', '最新交易日')}黄金期货主力收于{futures['close']}元每克"
         if futures.get("change_pct") is not None:
             text += f"，涨跌幅{futures['change_pct']}%"
         if futures.get("volume") is not None:
@@ -390,9 +405,9 @@ def build_structured_finance_script(
         price = sge.get("evening_price") or sge.get("morning_price")
         gold_bits.append(f"{sge.get('date', '最新交易日')}上海金基准价{price}元每克")
     if central_bank.get("gold_reserves") is not None:
-        gold_bits.append(
-            f"央行{central_bank.get('date', '最近一期')}黄金储备{central_bank['gold_reserves']}万盎司，趋势为{central_bank.get('trend', '待核对')}"
-        )
+        reserve_date = central_bank.get("date", "最近一期")
+        reserve_trend = central_bank.get("trend", "待核对")
+        gold_bits.append(f"央行{reserve_date}黄金储备{central_bank['gold_reserves']}万盎司，趋势为{reserve_trend}")
     if gold_bits:
         parts.append("黄金方面，" + "；".join(gold_bits[:3]) + "。")
     has_gold = bool(gold_bits)
@@ -459,9 +474,7 @@ def build_structured_finance_script(
         parts.append("跨资产风险指标方面，" + "、".join(risk_bits) + "。")
 
     missing_modules = [
-        label
-        for label, present in (("黄金", has_gold), ("债市", has_bond), ("宏观", has_macro))
-        if not present
+        label for label, present in (("黄金", has_gold), ("债市", has_bond), ("宏观", has_macro)) if not present
     ]
     if missing_modules:
         raise FinanceScriptError("金融初稿缺少关键模块：" + "、".join(missing_modules))

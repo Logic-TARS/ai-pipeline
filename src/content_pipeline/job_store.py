@@ -23,6 +23,10 @@ from .models import (
 STORE_VERSION = 1
 """Schema version written into every status.json. Increment on breaking changes."""
 
+__all__ = ["STORE_VERSION", "JobDeleteConflictError", "JobStore", "utc_now"]
+
+_TASK_ID_PATTERN = re.compile(r"[0-9a-f]{32}")
+
 
 class JobDeleteConflictError(RuntimeError):
     pass
@@ -35,6 +39,11 @@ def utc_now() -> str:
 def _safe_progress_text(value: str) -> str:
     """Prevent progress events from becoming a channel for local path disclosure."""
     return re.sub(r"(?:[A-Za-z]:[\\/][^\s\"']+|/(?:[^\s\"']+/)+[^\s\"']+)", "[已隐藏路径]", value)
+
+
+def _validate_task_id(task_id: str) -> None:
+    if not _TASK_ID_PATTERN.fullmatch(task_id):
+        raise FileNotFoundError(f"job not found: {task_id}")
 
 
 class JobStore:
@@ -66,6 +75,7 @@ class JobStore:
         return snapshot
 
     def job_dir(self, task_id: str) -> Path:
+        _validate_task_id(task_id)
         return self.jobs_dir / task_id
 
     def status_path(self, task_id: str) -> Path:
@@ -74,13 +84,23 @@ class JobStore:
     def events_path(self, task_id: str) -> Path:
         return self.job_dir(task_id) / "events.jsonl"
 
+    def _existing_job_dir(self, task_id: str) -> Path:
+        path = self.job_dir(task_id)
+        if path.is_symlink() or not path.is_dir():
+            raise FileNotFoundError(f"job not found: {task_id}")
+        return path
+
     def get(self, task_id: str) -> JobSnapshot:
-        raw = self.status_path(task_id).read_text(encoding="utf-8")
-        return JobSnapshot.model_validate_json(raw)
+        with self._lock:
+            raw = (self._existing_job_dir(task_id) / "status.json").read_text(encoding="utf-8")
+            return JobSnapshot.model_validate_json(raw)
 
     def save(self, snapshot: JobSnapshot) -> None:
         with self._lock:
-            path = self.status_path(snapshot.task_id)
+            job_dir = self.job_dir(snapshot.task_id)
+            if job_dir.is_symlink():
+                raise FileNotFoundError(f"job not found: {snapshot.task_id}")
+            path = job_dir / "status.json"
             path.parent.mkdir(parents=True, exist_ok=True)
             snapshot.store_version = STORE_VERSION
             snapshot.updated_at = utc_now()
@@ -99,8 +119,19 @@ class JobStore:
             "event": event,
             "payload": payload or {},
         }
-        with self._lock, self.events_path(task_id).open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        with self._lock:
+            events_path = self._existing_job_dir(task_id) / "events.jsonl"
+            with events_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    def read_events(self, task_id: str, *, limit: int | None = None) -> list[dict[str, Any]]:
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be a positive integer")
+        events_path = self._existing_job_dir(task_id) / "events.jsonl"
+        if not events_path.is_file():
+            raise FileNotFoundError(f"job not found: {task_id}")
+        events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        return events[-limit:] if limit is not None else events
 
     # ------------------------------------------------------------------
     # Lifecycle helpers
@@ -254,13 +285,13 @@ class JobStore:
     ) -> list[JobSnapshot]:
         """Return recent job snapshots, optionally filtered. Newest first."""
         jobs: list[JobSnapshot] = []
-        job_dirs = [path for path in self.jobs_dir.iterdir() if path.is_dir()]
+        job_dirs = [path for path in self.jobs_dir.iterdir() if not path.is_symlink() and path.is_dir()]
         job_dirs.sort(
             key=lambda path: (path / "status.json").stat().st_mtime if (path / "status.json").exists() else 0,
             reverse=True,
         )
         for job_dir in job_dirs:
-            if not job_dir.is_dir():
+            if job_dir.is_symlink() or not job_dir.is_dir():
                 continue
             status_path = job_dir / "status.json"
             if not status_path.exists():
@@ -282,8 +313,6 @@ class JobStore:
         normalized = display_name.strip()
         if not normalized or len(normalized) > 120:
             raise ValueError("display_name must contain 1-120 characters")
-        if not re.fullmatch(r"[0-9a-f]{32}", task_id):
-            raise FileNotFoundError(f"job not found: {task_id}")
         with self._lock:
             try:
                 snapshot = self.get(task_id)
@@ -295,10 +324,9 @@ class JobStore:
             return snapshot
 
     def delete_job(self, task_id: str) -> None:
-        if not re.fullmatch(r"[0-9a-f]{32}", task_id):
-            raise FileNotFoundError(f"job not found: {task_id}")
         with self._lock:
             try:
+                job_dir = self._existing_job_dir(task_id)
                 snapshot = self.get(task_id)
             except FileNotFoundError as exc:
                 raise FileNotFoundError(f"job not found: {task_id}") from exc
@@ -306,7 +334,7 @@ class JobStore:
                 raise JobDeleteConflictError("queued or running jobs cannot be deleted")
             if any(item.status in {"queued", "running"} for item in snapshot.publication_attempts):
                 raise JobDeleteConflictError("jobs with an active publication cannot be deleted")
-            _rmtree(self.job_dir(task_id))
+            _rmtree(job_dir)
 
     def delete_jobs(self, task_ids: list[str]) -> dict[str, list[str]]:
         result = {"deleted": [], "not_found": [], "blocked": [], "failed": []}
@@ -323,20 +351,33 @@ class JobStore:
         return result
 
     def cleanup_old_jobs(self, max_age_days: int = 30) -> int:
-        """Delete jobs older than *max_age_days*. Returns count of removed jobs."""
+        """Delete terminal jobs older than *max_age_days*. Returns count of removed jobs."""
+        if max_age_days < 1:
+            raise ValueError("max_age_days must be a positive integer")
         cutoff = time.time() - (max_age_days * 86400)
         removed = 0
-        for job_dir in self.jobs_dir.iterdir():
-            if not job_dir.is_dir():
-                continue
-            status_file = job_dir / "status.json"
-            if not status_file.exists():
-                continue
-            try:
-                mtime = status_file.stat().st_mtime
-            except OSError:
-                continue
-            if mtime < cutoff:
+        with self._lock:
+            for job_dir in self.jobs_dir.iterdir():
+                if job_dir.is_symlink() or not job_dir.is_dir():
+                    continue
+                if not _TASK_ID_PATTERN.fullmatch(job_dir.name):
+                    continue
+                status_file = job_dir / "status.json"
+                if not status_file.exists():
+                    continue
+                try:
+                    mtime = status_file.stat().st_mtime
+                    snapshot = JobSnapshot.model_validate_json(status_file.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if snapshot.task_id != job_dir.name:
+                    continue
+                if mtime >= cutoff:
+                    continue
+                if snapshot.status in {JobStatus.QUEUED, JobStatus.RUNNING}:
+                    continue
+                if any(item.status in {"queued", "running"} for item in snapshot.publication_attempts):
+                    continue
                 _rmtree(job_dir)
                 removed += 1
         return removed

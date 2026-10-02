@@ -1,5 +1,5 @@
 param(
-    [string]$TaskName = "AI Popline Desktop Browser Helper",
+    [string]$TaskName = "AI Pipeline Desktop Browser Helper",
     [string]$HostAddress = "127.0.0.1",
     [int]$Port = 8767,
     [string]$PythonExe = "",
@@ -45,7 +45,7 @@ Register-ScheduledTask `
     -Trigger $trigger `
     -Principal $principal `
     -Settings $settings `
-    -Description "Runs AI Popline's localhost desktop browser helper in the logged-in Windows desktop session." `
+    -Description "Runs AI Pipeline's localhost desktop browser helper in the logged-in Windows desktop session." `
     -Force | Out-Null
 
 if ($StartNow) {

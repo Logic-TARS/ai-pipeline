@@ -31,7 +31,7 @@ An official image-generation API is the preferred future backend **only after** 
 ## Target backend boundary
 
 ```text
-AI Popline Japanese pipeline
+AI Pipeline Japanese pipeline
   -> Photo-Process adapter (structured request/result)
   -> per-profile browser worker (only Chrome owner)
   -> Gemini / 日语视觉化 Gem

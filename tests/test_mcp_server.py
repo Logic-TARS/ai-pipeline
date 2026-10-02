@@ -82,7 +82,14 @@ def test_submit_task_returns_task_id(tmp_path: Path) -> None:
         mcp_mod.orchestrator = orch
         mcp_mod.settings = settings
 
-        result = asyncio.run(submit_task(description="动漫短片", content_type="anime", topic="周五下班"))
+        result = asyncio.run(
+            submit_task(
+                description="动漫短片",
+                content_type="anime",
+                topic="周五下班",
+                params={"script": "测试脚本", "dry_run": True},
+            )
+        )
         assert "task_id" in result
         assert len(result["task_id"]) == 32
         assert all(c in "0123456789abcdef" for c in result["task_id"])
@@ -132,14 +139,41 @@ def test_submit_task_with_publish_targets(tmp_path: Path) -> None:
                 content_type="anime",
                 topic="周五下班",
                 publish=True,
-                publish_targets=[{"platform": "douyin", "account": "测试账号"}],
-                params={"dry_run": True},
+                publish_targets=[{"platform": "bilibili", "account": "测试账号", "tid": 1}],
+                params={"script": "测试脚本", "dry_run": True},
             )
         )
         assert "task_id" in result
         assert len(result["task_id"]) == 32
         snapshot = orch.store.get(result["task_id"])
-        assert snapshot.task.publish_targets[0].platform == "douyin"
+        assert snapshot.task.publish_targets[0].platform == "bilibili"
+    finally:
+        mcp_mod.orchestrator = original_orch
+        mcp_mod.settings = original_settings
+
+
+def test_submit_task_rejects_unknown_params_for_known_pipeline(tmp_path: Path) -> None:
+    settings = _make_settings(tmp_path)
+    orch = Orchestrator(settings=settings, store=JobStore(settings.data_dir))
+
+    import content_pipeline.mcp_server as mcp_mod
+
+    original_orch = mcp_mod.orchestrator
+    original_settings = mcp_mod.settings
+    try:
+        mcp_mod.orchestrator = orch
+        mcp_mod.settings = settings
+
+        with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+            asyncio.run(
+                submit_task(
+                    description="动漫参数污染",
+                    content_type="anime",
+                    topic="测试",
+                    params={"script": "测试脚本", "dry_run": True, "unexpected": "value"},
+                )
+            )
+        assert orch.store.list_jobs() == []
     finally:
         mcp_mod.orchestrator = original_orch
         mcp_mod.settings = original_settings
@@ -165,7 +199,7 @@ def test_run_task_async_starts_background_task(tmp_path: Path) -> None:
                 description="异步任务",
                 content_type="anime",
                 topic="测试",
-                params={"dry_run": True},
+                params={"script": "测试脚本", "dry_run": True},
             )
         )
         assert result["status"] == "queued"
@@ -197,7 +231,7 @@ def test_start_task_submits_existing_task(tmp_path: Path) -> None:
                 description="待启动",
                 content_type="anime",
                 topic="测试",
-                params={"dry_run": True},
+                params={"script": "测试脚本", "dry_run": True},
             )
         )
         result = asyncio.run(start_task(task_id))
@@ -226,7 +260,7 @@ def test_start_task_does_not_restart_finished_task(tmp_path: Path) -> None:
                 description="已完成",
                 content_type="anime",
                 topic="测试",
-                params={"dry_run": True},
+                params={"script": "测试脚本", "dry_run": True},
             )
         )
         orch.store.finish(task_id, JobStatus.SUCCEEDED)
@@ -257,7 +291,14 @@ def test_get_status_returns_snapshot(tmp_path: Path) -> None:
         mcp_mod.orchestrator = orch
         mcp_mod.settings = settings
 
-        submit_result = asyncio.run(submit_task(description="状态测试", content_type="anime", topic="测试"))
+        submit_result = asyncio.run(
+            submit_task(
+                description="状态测试",
+                content_type="anime",
+                topic="测试",
+                params={"script": "测试脚本", "dry_run": True},
+            )
+        )
         task_id = submit_result["task_id"]
 
         status = asyncio.run(get_status(task_id))
@@ -266,6 +307,34 @@ def test_get_status_returns_snapshot(tmp_path: Path) -> None:
     finally:
         mcp_mod.orchestrator = original_orch
         mcp_mod.settings = original_settings
+
+
+def test_mcp_task_id_tools_reject_unsafe_ids(tmp_path: Path) -> None:
+    settings = _make_settings(tmp_path)
+    orch = Orchestrator(settings=settings, store=JobStore(settings.data_dir))
+    fake_executor = FakeExecutor()
+
+    import content_pipeline.mcp_server as mcp_mod
+
+    original_orch = mcp_mod.orchestrator
+    original_executor = mcp_mod.executor
+    try:
+        mcp_mod.orchestrator = orch
+        mcp_mod.executor = fake_executor
+
+        for unsafe_id in ["../outside", "a" * 31, "A" * 32, " " + "0" * 32 + " "]:
+            with pytest.raises((FileNotFoundError, ValueError)):
+                asyncio.run(start_task(unsafe_id))
+            with pytest.raises(ValueError, match="task not found"):
+                asyncio.run(get_status(unsafe_id))
+            with pytest.raises((FileNotFoundError, ValueError)):
+                asyncio.run(get_job_events(unsafe_id))
+
+        assert fake_executor.calls == []
+        assert not (settings.data_dir / "outside").exists()
+    finally:
+        mcp_mod.orchestrator = original_orch
+        mcp_mod.executor = original_executor
 
 
 def test_get_status_unknown_task_raises(tmp_path: Path) -> None:
@@ -302,7 +371,7 @@ def test_get_job_events_returns_recent_events(tmp_path: Path) -> None:
                 description="事件测试",
                 content_type="anime",
                 topic="测试",
-                params={"dry_run": True},
+                params={"script": "测试脚本", "dry_run": True},
             )
         )
         orch.store.event(task_id, "custom_event", {"ok": True})
@@ -311,6 +380,43 @@ def test_get_job_events_returns_recent_events(tmp_path: Path) -> None:
         assert result["task_id"] == task_id
         assert result["events"][0]["event"] == "custom_event"
         assert result["events"][0]["payload"] == {"ok": True}
+    finally:
+        mcp_mod.orchestrator = original_orch
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_get_job_events_rejects_non_positive_limits(tmp_path: Path, limit: int) -> None:
+    settings = _make_settings(tmp_path)
+    orch = Orchestrator(settings=settings, store=JobStore(settings.data_dir))
+
+    import content_pipeline.mcp_server as mcp_mod
+
+    original_orch = mcp_mod.orchestrator
+    try:
+        mcp_mod.orchestrator = orch
+        task_id = orch.submit(TaskInput(description="事件边界测试"))
+        orch.store.event(task_id, "custom_event", {"ok": True})
+
+        with pytest.raises(ValueError, match="limit must be a positive integer"):
+            asyncio.run(get_job_events(task_id, limit=limit))
+    finally:
+        mcp_mod.orchestrator = original_orch
+
+
+def test_get_job_events_reports_corrupt_event_log(tmp_path: Path) -> None:
+    settings = _make_settings(tmp_path)
+    orch = Orchestrator(settings=settings, store=JobStore(settings.data_dir))
+
+    import content_pipeline.mcp_server as mcp_mod
+
+    original_orch = mcp_mod.orchestrator
+    try:
+        mcp_mod.orchestrator = orch
+        task_id = orch.submit(TaskInput(description="损坏事件测试"))
+        orch.store.events_path(task_id).write_text("{not-json\n", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="job events are invalid"):
+            asyncio.run(get_job_events(task_id))
     finally:
         mcp_mod.orchestrator = original_orch
 
@@ -324,6 +430,9 @@ def test_list_capabilities_describes_agent_workflows() -> None:
     assert "finance_video" in workflow_names
     assert "get_status" in result["status_tools"]
     assert "open_photo_process_debug" in result["diagnostic_tools"]
+    generic_workflow = next(workflow for workflow in result["workflows"] if workflow["name"] == "generic_content_task")
+    assert "ai_briefing" in generic_workflow["content_types"]
+    assert "cover" not in generic_workflow["content_types"]
     photo_workflow = next(
         workflow for workflow in result["workflows"] if workflow["name"] == "photo_process_image_folder"
     )
@@ -425,7 +534,7 @@ def test_run_task_sync_unknown_content_type_fails(tmp_path: Path) -> None:
                 description="未知类型",
                 content_type="nonexistent_type",
                 topic="测试",
-                params={"dry_run": True},
+                params={"script": "测试脚本", "dry_run": True},
             )
         )
         assert result["status"] == "failed"
@@ -455,7 +564,7 @@ def test_generate_images_dry_run(tmp_path: Path) -> None:
                 prompt="测试提示词",
                 content_type="anime",
                 count=2,
-                params={"dry_run": True},
+                params={"script": "测试脚本", "dry_run": True},
             )
         )
         assert isinstance(result, list)
@@ -481,7 +590,7 @@ def test_generate_images_invalid_content_type(tmp_path: Path) -> None:
                     prompt="测试",
                     content_type="invalid_type",
                     count=1,
-                    params={"dry_run": True},
+                    params={"script": "测试脚本", "dry_run": True},
                 )
             )
     finally:
@@ -514,7 +623,7 @@ def test_render_video_dry_run(tmp_path: Path) -> None:
                 images=[str(img_dir / f"{i:02d}.jpg") for i in range(4)],
                 content_type="anime",
                 topic="测试视频",
-                params={"dry_run": True},
+                params={"script": "测试脚本", "dry_run": True},
             )
         )
         assert "video" in result
@@ -538,7 +647,7 @@ def test_render_video_empty_images(tmp_path: Path) -> None:
                 images=[],
                 content_type="anime",
                 topic="空视频",
-                params={"dry_run": True},
+                params={"script": "测试脚本", "dry_run": True},
             )
         )
         # dry_run mode produces a placeholder video even with no images
@@ -570,9 +679,9 @@ def test_process_ai_art_no_source_dir(tmp_path: Path) -> None:
         result = asyncio.run(
             process_ai_art(
                 source_dir=nonexistent,
-                image_prompt="测试提示词",
+                process_name="动漫图像比例更改",
                 title="AI艺术测试",
-                params={"dry_run": True},
+                params={"script": "测试脚本", "dry_run": True},
             )
         )
         assert result.get("status") in ("failed", "succeeded", "partial")
@@ -603,7 +712,7 @@ def test_process_ai_art_async_builds_explicit_task(tmp_path: Path) -> None:
         result = asyncio.run(
             process_ai_art_async(
                 source_dir=str(tmp_path / "images"),
-                image_prompt="水彩风格",
+                process_name="动漫图像比例更改",
                 title="作品集",
                 archive_dir=str(tmp_path / "done"),
                 failed_dir=str(tmp_path / "failed"),
@@ -641,7 +750,7 @@ def test_process_japanese_images_builds_photo_process_task(tmp_path: Path) -> No
             process_japanese_images(
                 source_dir=str(tmp_path / "input"),
                 output_dir=str(tmp_path / "output"),
-                image_prompt="日语视觉化",
+                process_name="日语视觉化",
                 source_files=["one.png"],
                 target_gem_url="https://gemini.google.com/gem/f306c82a8105",
                 dry_run=True,
@@ -756,7 +865,7 @@ def test_list_jobs_returns_recent(tmp_path: Path) -> None:
                 description="最近任务",
                 content_type="anime",
                 topic="测试",
-                params={"dry_run": True},
+                params={"script": "测试脚本", "dry_run": True},
             )
         )
 
@@ -766,4 +875,20 @@ def test_list_jobs_returns_recent(tmp_path: Path) -> None:
         assert result["jobs"][0]["description"] == "最近任务"
     finally:
         mcp_mod.orchestrator = original_orch
+        mcp_mod.settings = original_settings
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_list_jobs_rejects_non_positive_limits(tmp_path: Path, limit: int) -> None:
+    settings = _make_settings(tmp_path)
+
+    import content_pipeline.mcp_server as mcp_mod
+
+    original_settings = mcp_mod.settings
+    try:
+        mcp_mod.settings = settings
+
+        result = asyncio.run(list_jobs(limit=limit))
+        assert result == {"status": "failed", "error": "limit must be a positive integer"}
+    finally:
         mcp_mod.settings = original_settings

@@ -2,27 +2,27 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .errors import ConfigError, MediaValidationError, PrivateVisibilityUnsupportedError
+from .errors import ConfigError, MediaValidationError
 from .media_validation import validate_images
 from .models import AiArtSourceResult, JobStatus, PipelineStep, XhsImageNoteParams
 from .pipelines.registry import PipelineContext, PipelineMeta, register
 from .tools.photo_process_client import archive_source, run_photo_process_adapter, scan_source_images
-from .tools.sau_client import call_sau_xiaohongshu_note
+
+__all__ = ["run_xhs_image_note_pipeline"]
 
 
 @register(
     "xhs_image_note",
     meta=PipelineMeta(
         content_type="xhs_image_note",
-        description="Photo-Process 3:4 image editing -> optional Xiaohongshu note publish",
-        required_params=["source_dir", "image_prompt", "title"],
-        external_tools=["Photo-Process", "SAU"],
-        publish_targets=["xiaohongshu"],
+        description="Photo-Process 3:4 Xiaohongshu image optimization",
+        required_params=["source_dir", "process_name"],
+        external_tools=["Photo-Process"],
+        publish_targets=[],
     ),
 )
 def run_xhs_image_note_pipeline(ctx: PipelineContext) -> None:
     task_id = ctx.task_id
-    snapshot = ctx.snapshot
     artifacts = ctx.artifacts
     store = ctx.store
     settings = ctx.settings
@@ -49,9 +49,10 @@ def run_xhs_image_note_pipeline(ctx: PipelineContext) -> None:
                 source = _available_source(record)
                 adapter_result = run_photo_process_adapter(
                     source=source,
-                    prompt=params.image_prompt,
                     output_path=job_dir / "processed" / f"{index:04d}.png",
                     settings=settings,
+                    prompt=params.image_prompt,
+                    target_gem_name=params.process_name,
                 )
                 record.adapter_result = adapter_result
                 if not adapter_result.ok:
@@ -88,44 +89,8 @@ def run_xhs_image_note_pipeline(ctx: PipelineContext) -> None:
     artifacts.images = [Path(record.processed_path) for record in successful if record.processed_path]
     artifacts.validation.images = validate_images(artifacts.images, len(artifacts.images))
 
-    if not snapshot.task.publish:
-        artifacts.upload_result = {"skipped": True, "reason": "publish_not_requested"}
-        store.set_artifacts(task_id, artifacts)
-        store.event(task_id, "upload_skipped", {"reason": "publish_not_requested"})
-    else:
-        if not snapshot.task.publish_targets:
-            raise ConfigError("publish=true requires a Xiaohongshu publish target for an image note task")
-        invalid_targets = [
-            target.platform for target in snapshot.task.publish_targets if target.platform != "xiaohongshu"
-        ]
-        if invalid_targets:
-            raise ConfigError("xhs_image_note only supports xiaohongshu publish targets")
-        store.mark_running(task_id, PipelineStep.UPLOAD)
-        for target in snapshot.task.publish_targets:
-            key = f"{target.platform}:{target.account}"
-            try:
-                result = call_sau_xiaohongshu_note(
-                    images=artifacts.images,
-                    title=params.title,
-                    note=params.note or snapshot.task.description,
-                    tags=params.tags,
-                    account=target.account,
-                    settings=settings,
-                    schedule=params.schedule,
-                    debug=params.debug,
-                    headed=params.headed,
-                    dry_run=params.dry_run or bool(snapshot.task.params.get("dry_run")),
-                )
-                artifacts.publish_results[key] = {"status": "succeeded", **result}
-            except PrivateVisibilityUnsupportedError as exc:
-                artifacts.publish_results[key] = {"status": "blocked", "error": str(exc)}
-            except Exception as exc:
-                artifacts.publish_results[key] = {"status": "failed", "error": str(exc)}
-            store.set_artifacts(task_id, artifacts)
-        artifacts.upload_result = {"publish_results": artifacts.publish_results}
-
     store.set_artifacts(task_id, artifacts)
-    partial_reasons = _partial_reasons(artifacts.source_results, snapshot.task.publish, artifacts.publish_results)
+    partial_reasons = _partial_reasons(artifacts.source_results)
     if partial_reasons:
         store.finish(task_id, JobStatus.PARTIAL, "; ".join(partial_reasons))
     else:
@@ -150,14 +115,5 @@ def _validate_3_4(record: AiArtSourceResult, width: int, height: int) -> None:
         raise MediaValidationError(f"processed image aspect ratio {width}:{height} does not match 3:4")
 
 
-def _partial_reasons(
-    source_results: list[AiArtSourceResult],
-    publish: bool,
-    publish_results: dict[str, dict[str, object]],
-) -> list[str]:
-    reasons = [f"{Path(record.source_path).name}: {record.error}" for record in source_results if record.error]
-    if publish:
-        for key, result in publish_results.items():
-            if result.get("status") != "succeeded":
-                reasons.append(f"upload {key}: {result.get('error', result.get('status'))}")
-    return reasons
+def _partial_reasons(source_results: list[AiArtSourceResult]) -> list[str]:
+    return [f"{Path(record.source_path).name}: {record.error}" for record in source_results if record.error]

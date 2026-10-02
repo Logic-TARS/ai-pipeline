@@ -1,7 +1,9 @@
 "use strict";
 
-const THEME_STORAGE_KEY = "ai-popline-theme";
-const FORM_MEMORY_STORAGE_KEY = "ai-popline-form-memory-v1";
+const THEME_STORAGE_KEY = "ai-pipeline-theme";
+const LEGACY_THEME_STORAGE_KEY = "ai-popline-theme";
+const FORM_MEMORY_STORAGE_KEY = "ai-pipeline-form-memory-v1";
+const LEGACY_FORM_MEMORY_STORAGE_KEY = "ai-popline-form-memory-v1";
 
 applyTheme(readInitialTheme(), false);
 
@@ -76,6 +78,12 @@ document.addEventListener("DOMContentLoaded", () => {
       await selectTask(taskId);
     },
   });
+  window.TaskScheduler?.initialize({
+    request: apiRequest,
+    toast: showToast,
+    getPipelines: () => state.bootstrap?.pipelines || [],
+    getPublishEnabled: () => Boolean(state.bootstrap?.publish_enabled),
+  });
   initialize();
 });
 
@@ -84,19 +92,19 @@ function cacheElements() {
     "login-view", "login-form", "admin-token", "toggle-token", "login-error", "login-button",
     "app-shell", "service-chip", "refresh-button", "logout-button", "readiness-strip",
     "stat-all", "stat-running", "stat-succeeded", "stat-attention", "last-updated",
-    "status-filter", "pipeline-filter", "job-search", "delete-selected-jobs", "jobs-body", "jobs-empty",
+    "status-filter", "pipeline-filter", "job-search", "select-all-jobs", "delete-selected-jobs", "jobs-body", "jobs-empty",
     "detail-panel", "detail-empty", "detail-content", "create-task-button", "task-dialog",
-    "task-form", "pipeline-cards", "task-description", "task-topic", "pipeline-help",
+    "task-form", "pipeline-cards", "task-info-title", "task-info-help", "task-description-label",
+    "task-description", "task-topic-label", "task-topic", "pipeline-help",
     "dynamic-fields", "publish-toggle", "publish-help", "publish-targets-wrap",
     "publish-targets", "add-target-button", "advanced-params", "validation-badge",
     "validation-messages", "task-json-preview", "validate-task-button", "submit-task-button",
-    "publish-dialog", "publish-confirm-input", "cancel-publish-button", "confirm-publish-button",
+    "publish-dialog", "publish-confirm-input", "cancel-publish-button", "confirm-publish-button", "publish-target-summary",
     "rename-job-dialog", "rename-job-form", "rename-job-input", "cancel-rename-job", "submit-rename-job",
     "job-publish-dialog", "job-publish-form", "job-publish-alert", "close-job-publish-dialog",
     "job-publish-title", "job-publish-description", "job-publish-tags",
-    "job-publish-douyin-enabled", "job-publish-douyin-account",
-    "job-publish-kuaishou-enabled", "job-publish-kuaishou-account",
-    "job-publish-confirm-input", "cancel-job-publish", "submit-job-publish", "toast-region",
+    "job-publish-targets", "job-publish-add-target",
+    "job-publish-confirm-input", "job-publish-target-summary", "cancel-job-publish", "submit-job-publish", "toast-region",
   ];
   ids.forEach((id) => { elements[id] = document.getElementById(id); });
 }
@@ -127,6 +135,7 @@ function bindEvents() {
   elements["status-filter"].addEventListener("change", renderJobs);
   elements["pipeline-filter"].addEventListener("change", renderJobs);
   elements["job-search"].addEventListener("input", renderJobs);
+  elements["select-all-jobs"].addEventListener("change", toggleAllJobSelection);
   elements["delete-selected-jobs"].addEventListener("click", deleteSelectedJobs);
   elements["cancel-publish-button"].addEventListener("click", cancelPublish);
   elements["publish-confirm-input"].addEventListener("input", updatePublishConfirmation);
@@ -139,8 +148,8 @@ function bindEvents() {
   elements["cancel-job-publish"].addEventListener("click", closeJobPublishDialog);
   elements["job-publish-form"].addEventListener("submit", submitDeferredPublication);
   elements["job-publish-confirm-input"].addEventListener("input", updateDeferredPublishConfirmation);
-  elements["job-publish-douyin-enabled"].addEventListener("change", updateDeferredTargetInputs);
-  elements["job-publish-kuaishou-enabled"].addEventListener("change", updateDeferredTargetInputs);
+  elements["job-publish-add-target"].addEventListener("click", () => addDeferredTargetRow());
+  elements["job-publish-targets"].addEventListener("input", renderDeferredTargetSummary);
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) refreshWorkspace(false);
   });
@@ -148,7 +157,7 @@ function bindEvents() {
 
 function readInitialTheme() {
   try {
-    const stored = localStorage.getItem(THEME_STORAGE_KEY);
+    const stored = localStorage.getItem(THEME_STORAGE_KEY) ?? localStorage.getItem(LEGACY_THEME_STORAGE_KEY);
     if (stored === "light" || stored === "dark") return stored;
   } catch (error) {
     // Storage can be unavailable in hardened or private browser contexts.
@@ -174,7 +183,7 @@ function toggleTheme() {
 
 function readFormMemory() {
   try {
-    const stored = localStorage.getItem(FORM_MEMORY_STORAGE_KEY);
+    const stored = localStorage.getItem(FORM_MEMORY_STORAGE_KEY) ?? localStorage.getItem(LEGACY_FORM_MEMORY_STORAGE_KEY);
     const parsed = stored ? JSON.parse(stored) : {};
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
   } catch (error) {
@@ -238,7 +247,7 @@ async function apiRequest(path, options = {}) {
   }
   const method = (options.method || "GET").toUpperCase();
   if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
-    const csrf = getCookie("ai_popline_csrf");
+    const csrf = getCookie("ai_pipeline_csrf") || getCookie("ai_popline_csrf");
     if (csrf) headers.set("X-CSRF-Token", csrf);
   }
 
@@ -263,12 +272,12 @@ async function apiRequest(path, options = {}) {
 }
 
 function extractErrorMessage(payload, status) {
-  if (status === 405) return "后端服务版本较旧或尚未重启，不支持当前操作。请重启 AI Popline 服务后刷新页面。";
+  if (status === 405) return "后端服务版本较旧或尚未重启，不支持当前操作。请重启 AI Pipeline 服务后刷新页面。";
   if (payload && typeof payload === "object") {
     if (payload.error?.message) return payload.error.message;
     if (typeof payload.detail === "string") return payload.detail;
     if (payload.detail?.code === "recent_authentication_required") {
-      return "发布前需要重新验证管理员令牌，请退出后重新登录。";
+      return "发布前需要重新验证管理员令牌，请重新登录。";
     }
     if (payload.detail?.message) return payload.detail.message;
     if (payload.detail?.code) return payload.detail.code;
@@ -292,7 +301,7 @@ async function loadBootstrap() {
   if (!state.resumeTaskDialog) renderPipelineCards();
   if (!featureEnabled("job_delete")) {
     elements["delete-selected-jobs"].disabled = true;
-    elements["delete-selected-jobs"].title = "后端版本较旧，请重启 AI Popline 服务";
+    elements["delete-selected-jobs"].title = "后端版本较旧，请重启 AI Pipeline 服务";
     setServiceState(false, "需要重启服务");
   } else {
     setServiceState(true, "服务在线");
@@ -308,6 +317,7 @@ function showLogin(message = "", focus = true) {
   if (elements["publish-dialog"].open) elements["publish-dialog"].close();
   if (elements["rename-job-dialog"].open) elements["rename-job-dialog"].close();
   if (elements["job-publish-dialog"].open) elements["job-publish-dialog"].close();
+  window.TaskScheduler?.closeDialog();
   elements["app-shell"].hidden = true;
   elements["login-view"].hidden = false;
   elements["login-error"].hidden = !message;
@@ -320,6 +330,7 @@ function showApplication() {
   elements["app-shell"].hidden = false;
   elements["logout-button"].hidden = !state.bootstrap.auth_required;
   window.ContentStudio?.load();
+  window.TaskScheduler?.load();
   if (state.resumeTaskDialog) {
     state.resumeTaskDialog = false;
     elements["task-dialog"].showModal();
@@ -378,7 +389,7 @@ async function refreshWorkspace(showFeedback) {
     if (state.selectedTaskId) await loadTaskDetail(state.selectedTaskId, false);
     const currentContract = state.bootstrap?.api_contract_version >= 2;
     setServiceState(currentContract, currentContract ? "服务在线" : "需要重启服务");
-    if (showFeedback) showToast(currentContract ? "数据已刷新" : "后端版本较旧，请重启 AI Popline 服务", currentContract ? "success" : "warning");
+    if (showFeedback) showToast(currentContract ? "数据已刷新" : "后端版本较旧，请重启 AI Pipeline 服务", currentContract ? "success" : "warning");
   } catch (error) {
     setServiceState(false, "刷新失败");
     if (!(error instanceof ApiError && error.status === 401)) showToast(error.message, "error");
@@ -391,10 +402,13 @@ async function loadReadiness() {
   const ready = await apiRequest("/ready");
   const dataReady = ready.data_dir_available;
   const profilesReady = ready.profiles_available;
+  const defaultsReady = ready.pipeline_defaults_available;
   elements["readiness-strip"].innerHTML = `
     <span class="ready-item"><span class="status-dot ${dataReady ? "" : "offline"}"></span>任务存储 ${dataReady ? "可用" : "不可用"}</span>
     <span class="ready-divider"></span>
     <span class="ready-item"><span class="status-dot ${profilesReady ? "" : "offline"}"></span>内容配置 ${profilesReady ? "可用" : "不可用"}</span>
+    <span class="ready-divider"></span>
+    <span class="ready-item"><span class="status-dot ${defaultsReady ? "" : "offline"}"></span>默认参数 ${defaultsReady ? "可用" : "不可用"}</span>
     <span class="ready-divider"></span>
     <span class="ready-item">发布控制 ${state.bootstrap.publish_enabled ? "已启用" : "安全关闭"}</span>`;
 }
@@ -449,7 +463,6 @@ function renderJobs() {
   state.selectedJobIds.forEach((taskId) => {
     if (!state.jobs.some((job) => job.task_id === taskId)) state.selectedJobIds.delete(taskId);
   });
-  updateJobDeleteButton();
   elements["jobs-empty"].hidden = jobs.length > 0;
   elements["jobs-body"].innerHTML = jobs.map((job) => {
     const contentType = job.route?.content_type || job.task?.content_type || "unknown";
@@ -457,9 +470,7 @@ function renderJobs() {
     const selected = job.task_id === state.selectedTaskId ? "selected" : "";
     const checked = state.selectedJobIds.has(job.task_id) ? "checked" : "";
     const name = jobDisplayName(job);
-    const active = ["queued", "running"].includes(job.status) || job.publication_summary?.active;
-    const deleteSupported = featureEnabled("job_delete");
-    const deleteDisabled = !deleteSupported || active;
+    const deleteDisabled = !canDeleteJob(job);
     return `<tr class="${selected}" data-task-id="${escapeHtml(job.task_id)}" tabindex="0" aria-label="查看任务 ${escapeHtml(name)}">
       <td class="select-cell"><input type="checkbox" data-job-check="${escapeHtml(job.task_id)}" ${checked} ${deleteDisabled ? "disabled" : ""} aria-label="选择任务 ${escapeHtml(name)}"></td>
       <td><span class="job-title">${escapeHtml(name)}</span><span class="job-id">${escapeHtml(job.task_id.slice(0, 12))}</span></td>
@@ -490,23 +501,53 @@ function renderJobs() {
       deleteJob(button.dataset.deleteJob);
     });
   });
+  updateJobSelectionControls();
+}
+
+function canDeleteJob(job) {
+  return featureEnabled("job_delete") && !["queued", "running"].includes(job.status) && !job.publication_summary?.active;
+}
+
+function selectableJobs() {
+  return filteredJobs().filter(canDeleteJob);
 }
 
 function toggleJobSelection(taskId, checked) {
   if (!taskId) return;
   if (checked) state.selectedJobIds.add(taskId);
   else state.selectedJobIds.delete(taskId);
-  updateJobDeleteButton();
+  updateJobSelectionControls();
 }
 
-function updateJobDeleteButton() {
+function toggleAllJobSelection(event) {
+  const jobs = selectableJobs();
+  jobs.forEach((job) => {
+    if (event.target.checked) state.selectedJobIds.add(job.task_id);
+    else state.selectedJobIds.delete(job.task_id);
+  });
+  renderJobs();
+}
+
+function updateJobSelectionControls() {
   const button = elements["delete-selected-jobs"];
+  const selectAll = elements["select-all-jobs"];
   if (!button) return;
   const supported = featureEnabled("job_bulk_delete");
   const count = state.selectedJobIds.size;
   button.disabled = !supported || count === 0;
-  button.title = supported ? "" : "后端版本较旧，请重启 AI Popline 服务";
+  button.title = supported ? "" : "后端版本较旧，请重启 AI Pipeline 服务";
   button.textContent = count ? `删除选中（${count}）` : "删除选中";
+
+  if (!selectAll) return;
+  const jobs = selectableJobs();
+  const selectedCount = jobs.filter((job) => state.selectedJobIds.has(job.task_id)).length;
+  selectAll.disabled = !supported || jobs.length === 0;
+  selectAll.checked = jobs.length > 0 && selectedCount === jobs.length;
+  selectAll.indeterminate = selectedCount > 0 && selectedCount < jobs.length;
+}
+
+function updateJobDeleteButton() {
+  updateJobSelectionControls();
 }
 
 function clearTaskDetail() {
@@ -607,7 +648,6 @@ function renderTaskDetail(snapshot, events, artifacts, publishReadiness) {
   const progressMarkup = renderJobProgress(snapshot, contentType);
   const artifactMarkup = renderArtifacts(artifacts);
   const validation = snapshot.artifacts?.validation || {};
-  const publishResults = snapshot.artifacts?.publish_results || {};
   const publicationAttempts = snapshot.publication_attempts || [];
   const publicationSummary = snapshot.publication_summary || publishReadiness?.publication_summary;
   const publishControl = renderDeferredPublishControl(publishReadiness, publicationAttempts);
@@ -639,7 +679,6 @@ function renderTaskDetail(snapshot, events, artifacts, publishReadiness) {
       ${metaItem("结束时间", snapshot.finished_at ? formatDateTime(snapshot.finished_at) : "尚未结束")}
     </div></section>
     <section class="detail-section"><div class="section-title"><span aria-hidden="true">✓</span><div><h3>验证结果</h3><p>成片技术参数与完整性</p></div></div>${renderValidationSummary(validation)}</section>
-    ${Object.keys(publishResults).length ? `<section class="detail-section"><div class="section-title"><span aria-hidden="true">↑</span><div><h3>生成阶段发布结果</h3><p>兼容旧任务的各平台返回结果</p></div></div>${renderObjectSummary(publishResults, "暂无发布结果。")}</section>` : ""}
     ${publishReadiness?.content_studio_job ? `<section class="detail-section"><div class="section-title"><span aria-hidden="true">↑</span><div><h3>任务中心发布</h3><p>发布独立于视频生成状态，可失败后重试</p></div></div>${deferredPublishHistory}</section>` : ""}
     <section class="detail-section"><div class="section-title"><span aria-hidden="true">◇</span><div><h3>安全产物</h3><p>${artifacts.length} 个可访问文件</p></div></div>${artifactMarkup}</section>
     <section class="detail-section"><div class="section-title"><span aria-hidden="true">⌁</span><div><h3>事件时间线</h3><p>关键状态与进度更新</p></div></div><div class="timeline">${eventMarkup}</div></section>
@@ -691,7 +730,7 @@ function renderDeferredPublishControl(readiness, attempts) {
 }
 
 function renderPublicationOverview(summary) {
-  if (!summary?.content_studio_job) return "";
+  if (!summary) return "";
   const targets = summary.targets || [];
   const targetMarkup = targets.length ? `<div class="publication-summary-targets">${targets.map((target) => {
     const statusText = target.status === "published" ? "已发布" : target.status === "publishing" ? "发布中" : "失败";
@@ -737,11 +776,11 @@ function renderPublicationAttempts(attempts) {
 }
 
 function platformLabel(platform) {
-  return { douyin: "抖音", kuaishou: "快手", bilibili: "Bilibili", tencent: "腾讯视频" }[platform] || platform || "未知平台";
+  return { douyin: "抖音", kuaishou: "快手", bilibili: "Bilibili", tencent: "视频号" }[platform] || platform || "未知平台";
 }
 
 function publicationVisibilityLabel(visibility) {
-  return { private: "仅自己可见", draft: "草稿" }[visibility] || visibility || "";
+  return { private: "仅自己可见", public: "公开可见", draft: "草稿" }[visibility] || visibility || "";
 }
 
 function renderJobProgress(snapshot, contentType) {
@@ -808,11 +847,6 @@ function formatMediaDuration(value) {
   return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
 }
 
-function renderObjectSummary(value, emptyText) {
-  if (!value || Object.keys(value).length === 0) return `<p class="muted">${escapeHtml(emptyText)}</p>`;
-  return `<pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre>`;
-}
-
 function renderArtifacts(artifacts) {
   if (!artifacts.length) return `<p class="muted">当前没有可预览的任务内产物。</p>`;
   return `<div class="artifact-grid">${artifacts.map((artifact) => {
@@ -858,6 +892,8 @@ function selectPipeline(contentType) {
     card.setAttribute("aria-checked", String(selected));
   });
   const pipeline = pipelineByType(contentType);
+  configureTaskInfoFields(contentType);
+  restoreTaskInfo(pipeline);
   renderDynamicFields(pipeline);
   elements["pipeline-help"].textContent = pipeline?.description || "填写流水线参数。";
   configurePublishing(pipeline);
@@ -875,6 +911,26 @@ function pipelineByType(contentType) {
 
 function taskParamScope(contentType = selectedPipeline()) {
   return `task.${contentType || "unknown"}`;
+}
+
+function configureTaskInfoFields(_contentType) {
+  elements["task-info-title"].textContent = "任务信息";
+  elements["task-info-help"].textContent = "系统会按流水线自动填入，可按需微调。";
+  elements["task-description-label"].innerHTML = `<span class="field-label">任务描述<span class="required">*</span></span>`;
+  elements["task-description-label"].appendChild(elements["task-description"]);
+  elements["task-description"].placeholder = "例如：生成今日 AI 资讯视频";
+  elements["task-topic-label"].innerHTML = `<span class="field-label">内容主题</span>`;
+  elements["task-topic-label"].appendChild(elements["task-topic"]);
+  elements["task-topic"].required = false;
+  elements["task-topic"].placeholder = "留空时使用任务描述";
+}
+
+function restoreTaskInfo(pipeline) {
+  if (!pipeline) return;
+  const scope = taskParamScope(pipeline.content_type);
+  const defaults = pipeline.task_defaults || {};
+  elements["task-description"].value = rememberedField(scope, "task_description") ?? defaults.description ?? "";
+  elements["task-topic"].value = rememberedField(scope, "task_topic") ?? defaults.topic ?? "";
 }
 
 function renderDynamicFields(pipeline) {
@@ -951,21 +1007,30 @@ function addTargetRow(target = {}) {
     <label class="field">平台<select class="target-platform">${platforms.map((platform) => `<option value="${escapeHtml(platform)}" ${platform === target.platform ? "selected" : ""}>${escapeHtml(platform)}</option>`).join("")}</select></label>
     <label class="field">账号<input class="target-account" value="${escapeHtml(target.account || "")}" required></label>
     <label class="field target-tid-wrap">分区 tid<input class="target-tid" type="number" min="1" value="${escapeHtml(target.tid || "")}"></label>
+    <label class="field">可见性<select class="target-visibility"><option value="private" ${target.visibility === "public" ? "" : "selected"}>仅自己可见</option><option value="public" ${target.visibility === "public" ? "selected" : ""}>公开可见</option></select></label>
     <button class="icon-button remove-target" type="button" aria-label="删除发布目标">×</button>`;
   const platform = row.querySelector(".target-platform");
+  const visibility = row.querySelector(".target-visibility");
   const updateTid = () => { row.querySelector(".target-tid-wrap").hidden = platform.value !== "bilibili"; };
-  platform.addEventListener("change", () => { updateTid(); rememberCurrentTaskForm(); invalidatePreview(); });
+  const updateVisibility = () => {
+    const draftOnly = platform.value === "tencent";
+    visibility.disabled = draftOnly;
+    if (draftOnly) visibility.value = "private";
+  };
+  platform.addEventListener("change", () => { updateTid(); updateVisibility(); rememberCurrentTaskForm(); invalidatePreview(); });
+  visibility.addEventListener("change", () => { rememberCurrentTaskForm(); invalidatePreview(); });
   row.querySelector(".remove-target").addEventListener("click", () => { row.remove(); rememberCurrentTaskForm(); invalidatePreview(); });
   row.querySelectorAll("input").forEach((input) => input.addEventListener("input", () => { rememberCurrentTaskForm(); invalidatePreview(); }));
   updateTid();
+  updateVisibility();
   elements["publish-targets"].appendChild(row);
 }
 
 function openTaskDialog() {
   state.restoringTaskForm = true;
   elements["task-form"].reset();
-  elements["task-description"].value = rememberedField("task", "description") || "";
-  elements["task-topic"].value = rememberedField("task", "topic") || "";
+  elements["task-description"].value = "";
+  elements["task-topic"].value = "";
   elements["advanced-params"].value = rememberedField("task", "advanced_params") || "{}";
   elements["publish-targets"].innerHTML = "";
   state.validationResult = null;
@@ -1001,10 +1066,10 @@ function collectDynamicParams() {
 
 function rememberCurrentTaskForm() {
   if (!elements["task-form"] || state.restoringTaskForm) return;
-  rememberField("task", "description", elements["task-description"].value);
-  rememberField("task", "topic", elements["task-topic"].value);
   rememberAdvancedParams();
   const scope = taskParamScope();
+  rememberField(scope, "task_description", elements["task-description"].value);
+  rememberField(scope, "task_topic", elements["task-topic"].value);
   elements["dynamic-fields"].querySelectorAll("[data-param-name]").forEach((input) => {
     const value = input.dataset.paramType === "checkbox" ? input.checked : input.value;
     rememberField(scope, input.dataset.paramName, value);
@@ -1013,6 +1078,7 @@ function rememberCurrentTaskForm() {
     platform: row.querySelector(".target-platform").value,
     account: row.querySelector(".target-account").value,
     tid: row.querySelector(".target-tid").value,
+    visibility: row.querySelector(".target-visibility").value,
   }));
   rememberField(scope, "publish_settings", { publish: elements["publish-toggle"].checked, targets });
 }
@@ -1045,7 +1111,7 @@ function collectTask(checkValidity = true) {
     const account = row.querySelector(".target-account").value.trim();
     const tidValue = row.querySelector(".target-tid").value;
     if (!account) throw new Error("每个发布目标都必须填写账号。");
-    const target = { platform, account };
+    const target = { platform, account, visibility: platform === "tencent" ? "private" : row.querySelector(".target-visibility").value };
     if (platform === "bilibili") {
       if (!tidValue) throw new Error("Bilibili 发布目标必须填写分区 tid。");
       target.tid = Number(tidValue);
@@ -1053,10 +1119,14 @@ function collectTask(checkValidity = true) {
     return target;
   }) : [];
 
+  const contentType = selectedPipeline();
+  const description = elements["task-description"].value.trim();
+  const topic = elements["task-topic"].value.trim();
+
   const task = {
-    description: elements["task-description"].value.trim(),
-    content_type: selectedPipeline(),
-    topic: elements["task-topic"].value.trim() || null,
+    description,
+    content_type: contentType,
+    topic: topic || null,
     publish,
     publish_targets: publishTargets,
     params: { ...params, ...advanced },
@@ -1127,6 +1197,7 @@ async function handleTaskSubmit(event) {
   if (!result) return;
   if (result.task.publish) {
     state.pendingPublish = result;
+    renderPublishTargetSummary(elements["publish-target-summary"], result.task.publish_targets || []);
     elements["publish-confirm-input"].value = "";
     elements["confirm-publish-button"].disabled = true;
     elements["publish-dialog"].showModal();
@@ -1157,7 +1228,7 @@ async function submitValidatedTask(result, confirmation = "") {
   elements["submit-task-button"].disabled = true;
   elements["submit-task-button"].textContent = "正在提交…";
   try {
-    const headers = confirmation ? { "X-AI-Popline-Publish-Confirmation": confirmation } : {};
+    const headers = confirmation ? { "X-AI-Pipeline-Publish-Confirmation": confirmation } : {};
     const response = await apiRequest("/run", { method: "POST", headers, body: result.task });
     elements["task-dialog"].close();
     showToast("任务已进入队列", "success");
@@ -1179,21 +1250,21 @@ function openJobPublishDialog(snapshot, readiness, request = null) {
   const defaults = readiness.defaults || {};
   const selectedRequest = request || {};
   const selectedTargets = selectedRequest.publish_targets || [];
-  const targetByPlatform = Object.fromEntries(selectedTargets.map((target) => [target.platform, target]));
   state.jobPublishContext = { taskId: snapshot.task_id };
   elements["job-publish-title"].value = selectedRequest.title || defaults.title || "";
   elements["job-publish-description"].value = selectedRequest.description ?? defaults.description ?? "";
   elements["job-publish-tags"].value = (selectedRequest.tags || defaults.tags || []).join(", ");
-  elements["job-publish-douyin-enabled"].checked = request ? Boolean(targetByPlatform.douyin) : true;
-  elements["job-publish-kuaishou-enabled"].checked = Boolean(targetByPlatform.kuaishou);
-  elements["job-publish-douyin-account"].value = targetByPlatform.douyin?.account || defaults.accounts?.douyin || "";
-  elements["job-publish-kuaishou-account"].value = targetByPlatform.kuaishou?.account || defaults.accounts?.kuaishou || "";
+  elements["job-publish-targets"].innerHTML = "";
+  if (selectedTargets.length) {
+    selectedTargets.forEach((target) => addDeferredTargetRow(target.platform, target.account, target.visibility));
+  } else {
+    addDeferredTargetRow();
+  }
   elements["job-publish-confirm-input"].value = "";
   elements["job-publish-alert"].hidden = true;
   elements["job-publish-alert"].textContent = "";
   elements["submit-job-publish"].disabled = true;
   elements["submit-job-publish"].textContent = "确认并发布";
-  updateDeferredTargetInputs();
   elements["job-publish-dialog"].showModal();
   setTimeout(() => elements["job-publish-title"].focus(), 50);
 }
@@ -1203,27 +1274,115 @@ function closeJobPublishDialog() {
   if (elements["job-publish-dialog"].open) elements["job-publish-dialog"].close();
 }
 
-function updateDeferredTargetInputs() {
-  elements["job-publish-douyin-account"].disabled = !elements["job-publish-douyin-enabled"].checked;
-  elements["job-publish-kuaishou-account"].disabled = !elements["job-publish-kuaishou-enabled"].checked;
+const DEFERRED_PLATFORM_HINTS = { douyin: "仅自己可见", kuaishou: "仅自己可见", tencent: "保存为草稿" };
+
+function deferredSupportedPlatforms() {
+  return state.selectedPublishReadiness?.supported_platforms?.length
+    ? state.selectedPublishReadiness.supported_platforms
+    : ["douyin", "kuaishou", "tencent"];
+}
+
+function deferredAccountOptions(platform) {
+  return [...(state.selectedPublishReadiness?.account_options?.[platform] || [])];
+}
+
+function renderDeferredAccountControl(row, platform, preferredAccount) {
+  const slot = row.querySelector(".deferred-account-slot");
+  const defaults = state.selectedPublishReadiness?.defaults?.accounts || {};
+  const desired = preferredAccount || defaults[platform] || "";
+  const options = deferredAccountOptions(platform);
+  if (!options.length) {
+    slot.innerHTML = `<input class="deferred-target-account" placeholder="发布账号" required>`;
+    slot.querySelector(".deferred-target-account").value = desired;
+    return;
+  }
+  if (desired && !options.some((item) => item.account === desired)) {
+    options.unshift({ account: desired, status: "", status_label: "" });
+  }
+  slot.innerHTML = `<select class="deferred-target-account">${options.map((item) => {
+    const suffix = item.status && item.status !== "valid" && item.status_label ? `（${item.status_label}）` : "";
+    return `<option value="${escapeHtml(item.account)}" ${item.account === desired ? "selected" : ""}>${escapeHtml(item.account + suffix)}</option>`;
+  }).join("")}</select>`;
+}
+
+function addDeferredTargetRow(platform, account, visibility) {
+  const platforms = deferredSupportedPlatforms();
+  const selected = platforms.includes(platform) ? platform : platforms[0];
+  const row = document.createElement("div");
+  row.className = "deferred-target-row";
+  row.innerHTML = `
+    <label class="field">平台<select class="deferred-target-platform">${platforms.map((item) => `<option value="${escapeHtml(item)}" ${item === selected ? "selected" : ""}>${escapeHtml(platformLabel(item))}</option>`).join("")}</select></label>
+    <label class="field">账号<small class="deferred-target-hint"></small><span class="deferred-account-slot"></span></label>
+    <label class="field">可见性<select class="deferred-target-visibility"><option value="private" ${visibility === "public" ? "" : "selected"}>仅自己可见</option><option value="public" ${visibility === "public" ? "selected" : ""}>公开可见</option></select></label>
+    <button class="icon-button remove-target" type="button" aria-label="删除发布目标">×</button>`;
+  const platformSelect = row.querySelector(".deferred-target-platform");
+  const visibilitySelect = row.querySelector(".deferred-target-visibility");
+  const hint = row.querySelector(".deferred-target-hint");
+  const syncHint = () => {
+    if (platformSelect.value === "tencent") { hint.textContent = DEFERRED_PLATFORM_HINTS.tencent; return; }
+    hint.textContent = visibilitySelect.value === "public" ? "公开可见" : (DEFERRED_PLATFORM_HINTS[platformSelect.value] || "");
+  };
+  const syncVisibility = () => {
+    const draftOnly = platformSelect.value === "tencent";
+    visibilitySelect.disabled = draftOnly;
+    if (draftOnly) visibilitySelect.value = "private";
+  };
+  platformSelect.addEventListener("change", () => {
+    renderDeferredAccountControl(row, platformSelect.value);
+    syncVisibility();
+    syncHint();
+    renderDeferredTargetSummary();
+  });
+  visibilitySelect.addEventListener("change", () => { syncHint(); renderDeferredTargetSummary(); });
+  row.querySelector(".remove-target").addEventListener("click", () => { row.remove(); renderDeferredTargetSummary(); });
+  renderDeferredAccountControl(row, selected, account);
+  syncVisibility();
+  syncHint();
+  elements["job-publish-targets"].appendChild(row);
+  renderDeferredTargetSummary();
 }
 
 function updateDeferredPublishConfirmation() {
   elements["submit-job-publish"].disabled = elements["job-publish-confirm-input"].value.trim() !== "确认发布";
 }
 
+function renderPublishTargetSummary(container, targets) {
+  if (!targets.length) {
+    container.hidden = true;
+    container.innerHTML = "";
+    return;
+  }
+  const isPublicTarget = (target) => target.visibility === "public" && target.platform !== "tencent";
+  const items = targets.map((target) => {
+    const label = target.platform === "tencent" ? "保存为草稿" : (publicationVisibilityLabel(target.visibility) || "仅自己可见");
+    const account = target.account ? `（${escapeHtml(target.account)}）` : "";
+    return `<li><span>${escapeHtml(platformLabel(target.platform))}${account}</span><strong${isPublicTarget(target) ? ' class="visibility-public"' : ""}>${escapeHtml(label)}</strong></li>`;
+  }).join("");
+  const warning = targets.some(isPublicTarget)
+    ? `<p class="visibility-public-note">包含“公开可见”目标：内容将对所有人公开且不可撤回，请确认无误。</p>` : "";
+  container.innerHTML = `<ul class="publish-target-summary-list">${items}</ul>${warning}`;
+  container.hidden = false;
+}
+
+function renderDeferredTargetSummary() {
+  const targets = [...elements["job-publish-targets"].querySelectorAll(".deferred-target-row")].map((row) => ({
+    platform: row.querySelector(".deferred-target-platform").value,
+    account: row.querySelector(".deferred-target-account")?.value.trim() || "",
+    visibility: row.querySelector(".deferred-target-visibility").value,
+  }));
+  renderPublishTargetSummary(elements["job-publish-target-summary"], targets);
+}
+
 function collectDeferredPublication() {
   const publishTargets = [];
-  if (elements["job-publish-douyin-enabled"].checked) {
-    const account = elements["job-publish-douyin-account"].value.trim();
-    if (!account) throw new Error("请填写抖音账号。");
-    publishTargets.push({ platform: "douyin", account });
-  }
-  if (elements["job-publish-kuaishou-enabled"].checked) {
-    const account = elements["job-publish-kuaishou-account"].value.trim();
-    if (!account) throw new Error("请填写快手账号。");
-    publishTargets.push({ platform: "kuaishou", account });
-  }
+  elements["job-publish-targets"].querySelectorAll(".deferred-target-row").forEach((row) => {
+    const platform = row.querySelector(".deferred-target-platform").value;
+    const account = row.querySelector(".deferred-target-account").value.trim();
+    const visibility = platform === "tencent" ? "private" : row.querySelector(".deferred-target-visibility").value;
+    if (!account) throw new Error(`请填写${platformLabel(platform)}账号。`);
+    if (publishTargets.some((target) => target.platform === platform)) throw new Error("同一平台只能添加一次。");
+    publishTargets.push({ platform, account, visibility });
+  });
   if (!publishTargets.length) throw new Error("请至少选择一个发布平台。");
   const title = elements["job-publish-title"].value.trim();
   if (!title) throw new Error("请填写发布标题。");
@@ -1267,7 +1426,7 @@ async function submitDeferredPublication(event) {
     }
     await apiRequest(`/jobs/${context.taskId}/publish`, {
       method: "POST",
-      headers: { "X-AI-Popline-Publish-Confirmation": requiredConfirmation },
+      headers: { "X-AI-Pipeline-Publish-Confirmation": requiredConfirmation },
       body,
     });
     closeJobPublishDialog();

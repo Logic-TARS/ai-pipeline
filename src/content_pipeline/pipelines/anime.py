@@ -10,6 +10,8 @@ from content_pipeline.tools.gemini_client import call_gemini_skill
 from content_pipeline.tools.mpt_client import call_mpt
 from content_pipeline.tools.sau_client import call_sau_upload
 
+__all__ = ["run_anime_pipeline"]
+
 
 @register(
     "anime",

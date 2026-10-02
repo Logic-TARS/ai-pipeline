@@ -2,9 +2,10 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Copy source before installing the src-layout package.
-COPY pyproject.toml ./
+# Copy package metadata and source before installing the src-layout package.
+COPY pyproject.toml README.md ./
 COPY src ./src
+COPY config ./config
 COPY profiles ./profiles
 COPY tests ./tests
 COPY app.py ./

@@ -18,7 +18,7 @@
     "source_dir": "G:\\Job\\Photo-Datasets\\input",
     "archive_dir": "G:\\Job\\Photo-Datasets\\done",
     "failed_dir": "G:\\Job\\Photo-Datasets\\failed",
-    "image_prompt": "保留主体和构图，将图片改成细腻的水彩插画，统一色调，适合竖屏作品展示",
+    "process_name": "动漫图像比例更改",
     "title": "AI水彩作品集",
     "description": "使用 AI 改绘的水彩作品展示",
     "tags": ["AI绘画", "水彩", "作品集"],

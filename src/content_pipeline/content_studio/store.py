@@ -7,6 +7,8 @@ from uuid import uuid4
 
 from content_pipeline.content_studio.models import ContentDraft, utc_now
 
+__all__ = ["ContentDraftStore", "DraftConflictError", "DraftCorruptError", "DraftNotFoundError"]
+
 
 class DraftNotFoundError(FileNotFoundError):
     pass
@@ -16,18 +18,31 @@ class DraftConflictError(RuntimeError):
     pass
 
 
+class DraftCorruptError(RuntimeError):
+    pass
+
+
 class ContentDraftStore:
     def __init__(self, data_dir: Path):
         self.drafts_dir = data_dir / "content-drafts"
         self.drafts_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
 
-    def create(self, *, template_id: str, title: str, focus_assets: list[str], research) -> ContentDraft:
+    def create(
+        self,
+        *,
+        template_id: str,
+        title: str,
+        focus_assets: list[str],
+        research,
+        enabled_source_ids: list[str] | None = None,
+    ) -> ContentDraft:
         draft = ContentDraft(
             draft_id=uuid4().hex,
             template_id=template_id,
             title=title,
             focus_assets=focus_assets,
+            enabled_source_ids=enabled_source_ids,
             research=research,
         )
         with self._lock:
@@ -35,12 +50,14 @@ class ContentDraftStore:
         return draft
 
     def get(self, draft_id: str) -> ContentDraft:
-        path = self._path(draft_id)
         with self._lock:
             try:
+                path = self._existing_draft_dir(draft_id) / "draft.json"
                 return ContentDraft.model_validate_json(path.read_text(encoding="utf-8"))
             except FileNotFoundError as exc:
                 raise DraftNotFoundError("content draft not found") from exc
+            except ValueError as exc:
+                raise DraftCorruptError("content draft is invalid") from exc
 
     def save(self, draft: ContentDraft, *, expected_revision: int | None = None) -> ContentDraft:
         with self._lock:
@@ -53,9 +70,11 @@ class ContentDraftStore:
             self._save_unlocked(draft)
             return draft.model_copy(deep=True)
 
-    def mutate(self, draft_id: str, update) -> ContentDraft:
+    def mutate(self, draft_id: str, update, *, expected_revision: int | None = None) -> ContentDraft:
         with self._lock:
             draft = self.get(draft_id)
+            if expected_revision is not None and draft.revision != expected_revision:
+                raise DraftConflictError("content draft changed; reload it before saving")
             update(draft)
             draft.revision += 1
             draft.updated_at = utc_now()
@@ -66,7 +85,11 @@ class ContentDraftStore:
         with self._lock:
             drafts: list[ContentDraft] = []
             paths = sorted(
-                self.drafts_dir.glob("*/draft.json"),
+                (
+                    path
+                    for path in self.drafts_dir.glob("*/draft.json")
+                    if not path.parent.is_symlink() and path.parent.is_dir()
+                ),
                 key=lambda item: item.stat().st_mtime,
                 reverse=True,
             )
@@ -80,10 +103,8 @@ class ContentDraftStore:
             return drafts
 
     def delete(self, draft_id: str) -> None:
-        path = self._draft_dir(draft_id)
         with self._lock:
-            if not (path / "draft.json").is_file():
-                raise DraftNotFoundError("content draft not found")
+            path = self._existing_draft_dir(draft_id)
             _rmtree(path)
 
     def delete_many(self, draft_ids: list[str]) -> dict[str, list[str]]:
@@ -99,12 +120,14 @@ class ContentDraftStore:
         return result
 
     def source_dir(self, draft_id: str) -> Path:
-        path = self._draft_dir(draft_id) / "sources"
+        path = self._existing_draft_dir(draft_id) / "sources"
+        if path.is_symlink():
+            raise DraftNotFoundError("content draft not found")
         path.mkdir(parents=True, exist_ok=True)
         return path
 
     def write_source(self, draft_id: str, source_id: str, payload: dict) -> None:
-        if not source_id.replace("-", "").replace("_", "").isalnum():
+        if not source_id or len(source_id) > 80 or not source_id.replace("-", "").replace("_", "").isalnum():
             raise ValueError("invalid source id")
         path = self.source_dir(draft_id) / f"{source_id}.json"
         temporary = path.with_suffix(".json.tmp")
@@ -119,8 +142,16 @@ class ContentDraftStore:
             raise DraftNotFoundError("content draft not found")
         return self.drafts_dir / draft_id
 
+    def _existing_draft_dir(self, draft_id: str) -> Path:
+        path = self._draft_dir(draft_id)
+        if path.is_symlink() or not path.is_dir():
+            raise DraftNotFoundError("content draft not found")
+        return path
+
     def _save_unlocked(self, draft: ContentDraft) -> None:
         path = self._path(draft.draft_id)
+        if path.parent.is_symlink():
+            raise DraftNotFoundError("content draft not found")
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".json.tmp")
         temporary.write_text(draft.model_dump_json(indent=2), encoding="utf-8")

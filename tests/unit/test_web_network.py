@@ -46,6 +46,52 @@ def test_bind_policy_rejects_wildcards() -> None:
     assert errors == ["wildcard listeners are not supported; bind loopback or the exact ZeroTier interface IP"]
 
 
+def test_container_wildcard_requires_application_authentication() -> None:
+    settings = Settings(_env_file=None)
+
+    errors = validate_bind_configuration(
+        settings,
+        host="0.0.0.0",
+        ssl_certfile=None,
+        ssl_keyfile=None,
+        allow_container_wildcard=True,
+    )
+
+    assert errors == ["container wildcard listener requires WEB_AUTH_REQUIRED=true"]
+
+
+def test_container_wildcard_allows_authenticated_internal_listener() -> None:
+    settings = _remote_settings(
+        web_bind_host="0.0.0.0",
+        web_allowed_hosts="127.0.0.1,localhost,testserver",
+        web_allowed_origins="http://127.0.0.1:8080,http://localhost:8080,http://testserver",
+        web_allow_zerotier_http=True,
+    )
+
+    errors = validate_bind_configuration(
+        settings,
+        host="0.0.0.0",
+        ssl_certfile=None,
+        ssl_keyfile=None,
+        allow_container_wildcard=True,
+    )
+
+    assert errors == []
+
+
+def test_production_environment_requires_auth_even_on_loopback() -> None:
+    settings = Settings(_env_file=None, env="production")
+
+    errors = validate_bind_configuration(
+        settings,
+        host="127.0.0.1",
+        ssl_certfile=None,
+        ssl_keyfile=None,
+    )
+
+    assert errors == ["production environment requires WEB_AUTH_REQUIRED=true"]
+
+
 def test_remote_bind_requires_network_auth_and_transport() -> None:
     settings = Settings(_env_file=None, web_bind_host="10.147.17.5")
 
@@ -103,6 +149,8 @@ def test_auth_secrets_must_be_long_and_distinct() -> None:
     assert "WEB_API_TOKEN must contain at least 32 characters" in errors
     assert "WEB_SESSION_SECRET must contain at least 32 characters" in errors
     assert "WEB_ADMIN_TOKEN and WEB_API_TOKEN must be different" in errors
+    assert "WEB_ADMIN_TOKEN and WEB_SESSION_SECRET must be different" in errors
+    assert "WEB_API_TOKEN and WEB_SESSION_SECRET must be different" in errors
 
 
 def test_local_bind_probe_rejects_nonlocal_test_address() -> None:

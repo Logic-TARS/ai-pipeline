@@ -3,6 +3,8 @@
 import re
 from pathlib import Path
 
+__all__ = ["group_by_prefix"]
+
 
 def _natural_key(path: Path) -> list[object]:
     return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", path.name)]

@@ -4,13 +4,22 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
+from content_pipeline.errors import ExternalToolError
 from content_pipeline.settings import Settings
-from content_pipeline.tools.narrated_mpt_client import _briefing_voice_rate, call_narrated_mpt
+from content_pipeline.tools.common import mpt_task_id
+from content_pipeline.tools.narrated_mpt_client import (
+    _briefing_voice_rate,
+    _guard_generated_subtitle,
+    call_narrated_mpt,
+)
 
 
 def test_mismatched_input_hash_never_reuses_existing_task(tmp_path: Path, monkeypatch) -> None:
     mpt_dir = tmp_path / "mpt"
-    task_dir = mpt_dir / "storage" / "tasks" / "ai-briefing-20260720"
+    mpt_name = mpt_task_id("ai-briefing-20260720")
+    task_dir = mpt_dir / "storage" / "tasks" / mpt_name
     task_dir.mkdir(parents=True)
     (task_dir / "final-1.mp4").write_bytes(b"old-video")
     (task_dir / "subtitle.srt").write_text("old subtitle", encoding="utf-8")
@@ -29,10 +38,16 @@ def test_mismatched_input_hash_never_reuses_existing_task(tmp_path: Path, monkey
     )
     captured: list[str] = []
     captured_kwargs: dict[str, object] = {}
+    temporary_directory: Path | None = None
 
     def fake_run(command, **kwargs):
+        nonlocal temporary_directory
         captured.extend(command)
         captured_kwargs.update(kwargs)
+        environment = kwargs["env"]
+        temporary_directory = Path(environment["TEMP"])
+        assert temporary_directory.is_dir()
+        assert environment["TEMP"] == environment["TMP"] == environment["TMPDIR"]
         task_dir.mkdir(parents=True, exist_ok=True)
         (task_dir / "final-1.mp4").write_bytes(b"new-video")
         (task_dir / "subtitle.srt").write_text(
@@ -50,16 +65,22 @@ def test_mismatched_input_hash_never_reuses_existing_task(tmp_path: Path, monkey
         settings=Settings(mpt_dir=mpt_dir, mpt_python=Path("python")),
         input_hashes={"article.md": "new"},
     )
-    assert captured[captured.index("--task-id") + 1] == "ai-briefing-20260720"
-    assert captured_kwargs["env"] == {"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+    assert captured[captured.index("--task-id") + 1] == mpt_name
+    environment = captured_kwargs["env"]
+    assert isinstance(environment, dict)
+    assert environment["PYTHONIOENCODING"] == "utf-8"
+    assert environment["PYTHONUTF8"] == "1"
+    assert temporary_directory is not None
+    assert not temporary_directory.exists()
     assert captured_kwargs["timeout"] == 3600
     assert result.video.read_bytes() == b"new-video"
-    assert list((mpt_dir / "storage" / "tasks").glob("ai-briefing-20260720.stale-*"))
+    assert list((mpt_dir / "storage" / "tasks").glob(f"{mpt_name}.stale-*"))
 
 
 def test_invalid_exact_task_is_archived_instead_of_reused(tmp_path: Path, monkeypatch) -> None:
     mpt_dir = tmp_path / "mpt"
-    task_dir = mpt_dir / "storage" / "tasks" / "finance-20260721"
+    mpt_name = mpt_task_id("finance-20260721")
+    task_dir = mpt_dir / "storage" / "tasks" / mpt_name
     task_dir.mkdir(parents=True)
     (task_dir / "final-1.mp4").write_bytes(b"incomplete-video")
     (task_dir / "subtitle.srt").write_text(
@@ -89,13 +110,13 @@ def test_invalid_exact_task_is_archived_instead_of_reused(tmp_path: Path, monkey
     )
     assert captured
     assert result.video.read_bytes() == b"regenerated-video"
-    assert list((mpt_dir / "storage" / "tasks").glob("finance-20260721.stale-*"))
+    assert list((mpt_dir / "storage" / "tasks").glob(f"{mpt_name}.stale-*"))
 
 
 def test_narrated_mpt_reports_safe_milestones_from_streamed_output(tmp_path: Path, monkeypatch) -> None:
     mpt_dir = tmp_path / "mpt"
     task_name = "content-progress"
-    task_dir = mpt_dir / "storage" / "tasks" / task_name
+    task_dir = mpt_dir / "storage" / "tasks" / mpt_task_id(task_name)
     updates: list[tuple[int, str, str, bool]] = []
 
     def fake_run(command, **kwargs):
@@ -153,7 +174,7 @@ def test_voice_rate_is_part_of_reuse_identity(tmp_path: Path, monkeypatch) -> No
     first_manifest = json.loads((output_dir / "generation_manifest.json").read_text(encoding="utf-8"))
     assert first_manifest["voice_rate"] == 0.8
 
-    task_dir = mpt_dir / "storage" / "tasks" / task_name
+    task_dir = mpt_dir / "storage" / "tasks" / mpt_task_id(task_name)
     captured: list[str] = []
 
     def fake_run(command, **kwargs):
@@ -179,3 +200,53 @@ def test_voice_rate_is_part_of_reuse_identity(tmp_path: Path, monkeypatch) -> No
     assert captured[captured.index("--voice-rate") + 1] == "1.1"
     updated_manifest = json.loads((output_dir / "generation_manifest.json").read_text(encoding="utf-8"))
     assert updated_manifest["voice_rate"] == 1.1
+
+
+def test_narrated_mpt_cleans_temporary_directory_when_run_fails(tmp_path: Path, monkeypatch) -> None:
+    mpt_dir = tmp_path / "mpt"
+    temporary_directory: Path | None = None
+
+    def fake_run(_command, **kwargs):
+        nonlocal temporary_directory
+        environment = kwargs["env"]
+        temporary_directory = Path(environment["TEMP"])
+        assert temporary_directory.is_dir()
+        assert environment["PYTHONIOENCODING"] == "utf-8"
+        assert environment["PYTHONUTF8"] == "1"
+        raise RuntimeError("run failed")
+
+    monkeypatch.setattr("content_pipeline.tools.narrated_mpt_client.run_command", fake_run)
+
+    with pytest.raises(RuntimeError, match="run failed"):
+        call_narrated_mpt(
+            task_name="failed-narration",
+            title="今日资讯",
+            script="这是一段足够长的口播稿。" * 10,
+            output_dir=tmp_path / "output",
+            settings=Settings(mpt_dir=mpt_dir, mpt_python=Path("python")),
+        )
+
+    assert temporary_directory is not None
+    assert not temporary_directory.exists()
+
+
+def test_generated_subtitle_path_must_stay_inside_task_dir(tmp_path: Path) -> None:
+    task_dir = tmp_path / "mpt" / "storage" / "tasks" / "content-subtitle"
+    task_dir.mkdir(parents=True)
+    outside = tmp_path / "outside.srt"
+    outside.write_text("subtitle", encoding="utf-8")
+
+    with pytest.raises(ExternalToolError, match="invalid subtitle path"):
+        _guard_generated_subtitle(outside, task_dir)
+
+
+def test_generated_subtitle_path_rejects_symlink(tmp_path: Path) -> None:
+    task_dir = tmp_path / "mpt" / "storage" / "tasks" / "content-subtitle"
+    task_dir.mkdir(parents=True)
+    target = task_dir / "target.srt"
+    target.write_text("subtitle", encoding="utf-8")
+    link = task_dir / "subtitle.srt"
+    link.symlink_to(target)
+
+    with pytest.raises(ExternalToolError, match="invalid subtitle path"):
+        _guard_generated_subtitle(link, task_dir)

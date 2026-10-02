@@ -1,3 +1,13 @@
+__all__ = [
+    "ConfigError",
+    "ExternalToolError",
+    "MediaValidationError",
+    "PipelineError",
+    "PrivateVisibilityUnsupportedError",
+    "UnknownContentTypeError",
+]
+
+
 class PipelineError(Exception):
     """Base class for expected pipeline failures."""
 

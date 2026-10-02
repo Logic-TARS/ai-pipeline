@@ -62,3 +62,13 @@ def test_stderr_reader_keeps_a_bounded_diagnostic_tail(tmp_path: Path) -> None:
     assert len(client._stderr) == 100
     assert client._stderr[0] == "line-50"
     assert client._stderr[-1] == "line-149"
+
+
+def test_generated_image_path_must_stay_inside_output_dir(tmp_path: Path) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"image")
+
+    with pytest.raises(RuntimeError, match="outside output_dir"):
+        gemini_mcp_client._guard_generated_image(outside, output_dir)

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+__all__ = ["render_template"]
+
 
 def render_template(template: str, topic: str, params: dict[str, Any]) -> str:
     script = str(params.get("script") or params.get("copy") or topic)

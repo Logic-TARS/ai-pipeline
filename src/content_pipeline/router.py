@@ -7,6 +7,8 @@ import urllib.request
 from .models import RouteResult, TaskInput
 from .settings import Settings
 
+__all__ = ["route_task"]
+
 ROUTER_PROMPT = """Classify this content task.
 Return only JSON with keys: content_type, topic, params.
 Allowed content_type values: anime, finance, ai_briefing, ai_art, grouped_anime, japanese, script_video, unknown.

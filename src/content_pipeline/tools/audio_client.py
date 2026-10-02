@@ -7,6 +7,8 @@ import imageio_ffmpeg
 from content_pipeline.errors import ConfigError
 from content_pipeline.tools.common import run_command
 
+__all__ = ["prepare_music_track"]
+
 
 def prepare_music_track(*, source: Path, output: Path, duration_seconds: int) -> Path:
     if duration_seconds < 1:

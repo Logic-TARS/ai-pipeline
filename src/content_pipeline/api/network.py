@@ -8,6 +8,17 @@ from urllib.parse import urlsplit
 
 from content_pipeline.settings import Settings
 
+__all__ = [
+    "ensure_bind_address_is_local",
+    "is_loopback_host",
+    "origin_matches",
+    "parse_ip_address",
+    "parse_networks",
+    "peer_is_allowed",
+    "secrets_compare",
+    "validate_bind_configuration",
+]
+
 WILDCARD_HOSTS = {"0.0.0.0", "::", "[::]", "*"}
 LOOPBACK_NAMES = {"localhost", "ip6-localhost"}
 
@@ -63,18 +74,24 @@ def validate_bind_configuration(
     host: str,
     ssl_certfile: Path | None,
     ssl_keyfile: Path | None,
+    allow_container_wildcard: bool = False,
 ) -> list[str]:
     """Return fail-closed errors for a requested HTTP listener."""
     errors: list[str] = []
     normalized = host.strip().lower()
     if normalized in WILDCARD_HOSTS:
-        return ["wildcard listeners are not supported; bind loopback or the exact ZeroTier interface IP"]
+        if not allow_container_wildcard:
+            return ["wildcard listeners are not supported; bind loopback or the exact ZeroTier interface IP"]
+        if not settings.web_auth_required:
+            errors.append("container wildcard listener requires WEB_AUTH_REQUIRED=true")
 
     admin_token = settings.web_admin_token.get_secret_value()
     api_token = settings.web_api_token.get_secret_value()
     session_secret = settings.web_session_secret.get_secret_value()
     if bool(ssl_certfile) != bool(ssl_keyfile):
         errors.append("both TLS certificate and key must be configured together")
+    if settings.env.strip().lower() == "production" and not settings.web_auth_required:
+        errors.append("production environment requires WEB_AUTH_REQUIRED=true")
     if settings.web_auth_required:
         if len(admin_token) < 32:
             errors.append("WEB_ADMIN_TOKEN must contain at least 32 characters")
@@ -84,7 +101,13 @@ def validate_bind_configuration(
             errors.append("WEB_SESSION_SECRET must contain at least 32 characters")
         if admin_token and secrets_compare(admin_token, api_token):
             errors.append("WEB_ADMIN_TOKEN and WEB_API_TOKEN must be different")
+        if admin_token and secrets_compare(admin_token, session_secret):
+            errors.append("WEB_ADMIN_TOKEN and WEB_SESSION_SECRET must be different")
+        if api_token and secrets_compare(api_token, session_secret):
+            errors.append("WEB_API_TOKEN and WEB_SESSION_SECRET must be different")
 
+    if normalized in WILDCARD_HOSTS and allow_container_wildcard:
+        return errors
     if is_loopback_host(host):
         return errors
 

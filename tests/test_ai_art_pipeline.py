@@ -67,7 +67,8 @@ def test_call_photo_process_forces_utf8_subprocess_output(tmp_path: Path, monkey
     )
 
     assert captured["env"] == {"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
-    assert "--target-gem-name" not in captured["command"]
+    assert "--process-name" not in captured["command"]
+    assert "--preserve-source" in captured["command"]
     assert output == tmp_path / "out" / "0001.png"
     assert output.is_file()
 
@@ -237,7 +238,8 @@ def test_call_photo_process_can_override_target_gem_name_and_url(tmp_path: Path,
     )
 
     command = captured["command"]
-    assert command[command.index("--target-gem-name") + 1] == "日语视觉化"
+    assert command[command.index("--process-name") + 1] == "日语视觉化"
+    assert "--preserve-source" in command
     assert command[command.index("--target-gem-url") + 1] == "https://gemini.google.com/gem/7aaa12067979"
 
 
@@ -317,7 +319,11 @@ def test_ai_art_skips_failed_image_regroups_and_archives_successes(tmp_path: Pat
     monkeypatch.setattr(ai_art_pipeline, "validate_video", lambda *_args, **_kwargs: validation)
     monkeypatch.setattr(ai_art_pipeline, "choose_bgm", lambda *_args, **_kwargs: tmp_path / "music.mp3")
 
-    settings = Settings(data_dir=tmp_path / "output", profiles_dir=Path("profiles"))
+    settings = Settings(
+        data_dir=tmp_path / "output",
+        profiles_dir=Path("profiles"),
+        pipeline_defaults_file=tmp_path / "missing-defaults.yaml",
+    )
     orchestrator = Orchestrator(settings=settings, store=JobStore(settings.data_dir))
     task_id = orchestrator.submit(
         TaskInput(
@@ -325,7 +331,7 @@ def test_ai_art_skips_failed_image_regroups_and_archives_successes(tmp_path: Pat
             content_type="ai_art",
             params={
                 "source_dir": str(source_dir),
-                "image_prompt": "改成水彩画",
+                "process_name": "动漫图像比例更改",
                 "title": "水彩作品",
                 "group_size": 4,
             },

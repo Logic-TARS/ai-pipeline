@@ -1,15 +1,27 @@
 services:
-  ai-popline:
+  ai-pipeline:
     build: .
+    restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
     ports:
-      - "127.0.0.1:${API_PORT:-8080}:8080"
+      - "127.0.0.1:${WEB_PORT:-8080}:8080"
     env_file:
       - .env
     environment:
+      # Keep runtime state on the mounted /data volume even if host .env uses local paths.
+      PIPELINE_DATA_DIR: /data
       # The host port is loopback-only. The bridge hop is treated as an authenticated HTTP peer.
       WEB_ALLOWED_NETWORKS: 172.16.0.0/12
       WEB_AUTH_REQUIRED: "true"
       WEB_ALLOW_ZEROTIER_HTTP: "true"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
     volumes:
       - ./output:/data
       - ./profiles:/app/profiles:ro
