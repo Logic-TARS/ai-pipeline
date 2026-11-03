@@ -341,7 +341,6 @@ PIPELINE_FIELDS: dict[str, list[dict[str, Any]]] = {
     ],
     "japanese": [
         _field("source_dir", "输入图片目录", "path", required=True),
-        _field("output_dir", "输出目录", "path", placeholder="留空时写入输入目录/日语改图"),
         _field("source_files", "指定文件", "tags"),
         _field("process_name", "处理名称", default="日语视觉化", help_text="Photo-Process 中配置的处理名称。"),
         _field(

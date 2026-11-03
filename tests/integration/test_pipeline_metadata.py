@@ -9,6 +9,7 @@ from test_ai_briefing_pipeline import SAMPLE_ARTICLE, _make_day, _mock_real_mpt
 from test_finance_pipeline import SAMPLE_MD
 
 from content_pipeline import ai_briefing_pipeline, finance_pipeline
+from content_pipeline.api.artifacts import registered_artifacts
 from content_pipeline.job_store import JobStore
 from content_pipeline.models import AdapterResult, ErrorCode, JobStatus, TaskInput
 from content_pipeline.orchestrator import Orchestrator
@@ -117,6 +118,20 @@ def test_final_metadata_reaches_video_cover_publish_and_artifacts(tmp_path, monk
         external = json.loads((day / "video_status.json").read_text(encoding="utf-8"))
         assert external["title"] == title
         assert external["steps"]["metadata_generation"] == "ok"
+        assert snapshot.artifacts.publish_metadata_path.read_text(encoding="utf-8") == (
+            f"标题：\n{title}\n\n描述：\n{description}\n\n标签：\n#AI #人工智能 #科技\n"
+        )
+        delivery = orchestrator.settings.data_dir / "deliverables" / "ai_briefing" / "20260720"
+        assert snapshot.artifacts.delivery_dir == delivery
+        assert (delivery / "publish_metadata.txt").is_file()
+        registered = registered_artifacts(snapshot, orchestrator.store.job_dir(task_id))
+        relative_paths = {artifact.relative_path for artifact in registered.values()}
+        assert {
+            "video/briefing.mp4",
+            "video/briefing.srt",
+            "video/generation_manifest.json",
+            "publish_metadata.txt",
+        } <= relative_paths
 
 
 @pytest.mark.parametrize("kind", ["ai_briefing", "finance"])

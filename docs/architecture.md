@@ -93,6 +93,8 @@ Jobs are stored at `<data_dir>/jobs/<task_id>/`:
 - `cover/cover.png` — exact-size cover for real AI Briefing jobs (Cover-Forge output or local Pillow fallback)
 - Pipeline-specific directories (groups/, processed/, photo_process_sources/)
 
+Validated files intended for operators are exposed under `<data_dir>/deliverables/<pipeline>/<date-or-task_id>/`. The job directory remains the canonical evidence root; delivery files use hard links when possible and fall back to copies across filesystems.
+
 ## Publishing Safety
 
 All publishing defaults to OFF. `TaskInput.publish` must be explicitly `true`. Visibility defaults to private (仅自己可见); each publish target may explicitly select `public`. Both modes are evidence-enforced:

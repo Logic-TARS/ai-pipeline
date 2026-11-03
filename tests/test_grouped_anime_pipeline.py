@@ -97,6 +97,9 @@ def test_grouped_anime_calls_mpt_once_per_prefix_group(tmp_path: Path, monkeypat
     assert all(call["topic"] == grouped_anime_pipeline.MPT_VISUAL_ONLY_PLACEHOLDER for call in calls)
     assert all(call["params"]["script"] == grouped_anime_pipeline.MPT_VISUAL_ONLY_PLACEHOLDER for call in calls)
     assert snapshot.artifacts.upload_result == {"skipped": True, "reason": "publish_not_requested"}
+    assert list((tmp_path / "source").glob("*.png")) == []
+    assert len(list((tmp_path / "archive").glob("*.png"))) == 4
+    assert snapshot.artifacts.publish_metadata_path.is_file()
 
 
 def test_grouped_anime_keeps_successful_group_when_one_mpt_call_fails(tmp_path: Path, monkeypatch) -> None:
@@ -107,3 +110,5 @@ def test_grouped_anime_keeps_successful_group_when_one_mpt_call_fails(tmp_path: 
     assert snapshot.artifacts.groups[0].video is not None
     assert snapshot.artifacts.groups[1].video is None
     assert snapshot.artifacts.groups[1].error == "second group failed"
+    assert sorted(path.name for path in (tmp_path / "archive").glob("*.png")) == ["alpha1.png", "alpha2.png"]
+    assert sorted(path.name for path in (tmp_path / "source").glob("*.png")) == ["beta1.png", "beta2.png"]

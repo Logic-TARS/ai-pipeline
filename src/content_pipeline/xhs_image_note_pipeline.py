@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .deliverables import export_deliverables
 from .errors import ConfigError, MediaValidationError
 from .media_validation import validate_images
 from .models import AiArtSourceResult, JobStatus, PipelineStep, XhsImageNoteParams
@@ -88,6 +89,15 @@ def run_xhs_image_note_pipeline(ctx: PipelineContext) -> None:
         raise ConfigError("Photo-Process did not produce any usable 3:4 Xiaohongshu images")
     artifacts.images = [Path(record.processed_path) for record in successful if record.processed_path]
     artifacts.validation.images = validate_images(artifacts.images, len(artifacts.images))
+    delivery_dir, delivery_files, _metadata_path = export_deliverables(
+        data_dir=settings.data_dir,
+        job_dir=job_dir,
+        pipeline="xhs_image_note",
+        key=task_id,
+        files={f"images/{index:04d}{path.suffix.lower()}": path for index, path in enumerate(artifacts.images, 1)},
+    )
+    artifacts.delivery_dir = delivery_dir
+    artifacts.delivery_files = delivery_files
 
     store.set_artifacts(task_id, artifacts)
     partial_reasons = _partial_reasons(artifacts.source_results)

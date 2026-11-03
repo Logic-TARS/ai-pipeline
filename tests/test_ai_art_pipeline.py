@@ -350,3 +350,46 @@ def test_ai_art_skips_failed_image_regroups_and_archives_successes(tmp_path: Pat
     assert snapshot.artifacts.source_results[1].adapter_result.code == ErrorCode.EXTERNAL_TOOL_FAILED
     assert (source_dir / "2.png").is_file()
     assert len(list((source_dir / "已处理").glob("*.png"))) == 4
+    assert snapshot.artifacts.publish_metadata_path.is_file()
+
+
+def test_ai_art_keeps_source_when_video_generation_fails(tmp_path: Path, monkeypatch) -> None:
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source = source_dir / "1.png"
+    Image.new("RGB", (90, 160), color="blue").save(source)
+
+    def fake_photo_process(*, source: Path, output_path: Path, **_kwargs) -> AdapterResult:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, output_path)
+        return AdapterResult(
+            ok=True,
+            tool="Photo-Process",
+            code=ErrorCode.OK,
+            artifacts={"processed_path": str(output_path)},
+        )
+
+    monkeypatch.setattr(ai_art_pipeline, "run_photo_process_adapter", fake_photo_process)
+    monkeypatch.setattr(
+        ai_art_pipeline, "render_slideshow", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("render failed"))
+    )
+    monkeypatch.setattr(ai_art_pipeline, "choose_bgm", lambda *_args, **_kwargs: tmp_path / "music.mp3")
+    settings = Settings(
+        data_dir=tmp_path / "output",
+        profiles_dir=Path("profiles"),
+        pipeline_defaults_file=tmp_path / "missing-defaults.yaml",
+    )
+    orchestrator = Orchestrator(settings=settings, store=JobStore(settings.data_dir))
+    task_id = orchestrator.submit(
+        TaskInput(
+            description="AI 绘画视频",
+            content_type="ai_art",
+            params={"source_dir": str(source_dir), "process_name": "动漫图像比例更改", "title": "水彩作品"},
+        )
+    )
+
+    orchestrator.run(task_id)
+
+    assert orchestrator.store.get(task_id).status == JobStatus.FAILED
+    assert source.is_file()
+    assert not (source_dir / "已处理").exists()

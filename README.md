@@ -250,7 +250,7 @@ Top-level images are processed in natural filename order, or restricted by `sour
 ai-pipeline run --task examples/tasks/local/task.japanese.example.json
 ```
 
-The pipeline sends top-level source images to the configured Photo-Process Gem and stores stable numbered outputs in `params.output_dir` (default: `source_dir/日语改图`). Source images are preserved. This workflow ends after image validation and never generates video or publishes.
+The pipeline sends top-level source images to the configured Photo-Process Gem and stores stable numbered outputs under `output/deliverables/japanese/<task_id>/images/`. Source images are preserved. This workflow ends after image validation and never generates video or publishes.
 
 ### Grouped Anime videos
 
@@ -279,6 +279,7 @@ The package installs the `ai-pipeline` command:
 | `ai-pipeline jobs reap [--older-than-hours N]` | Mark stale `queued` or `running` jobs as failed so they can be deleted |
 | `ai-pipeline jobs delete <task_id> [<task_id> ...]` | Delete one or more persisted jobs |
 | `ai-pipeline jobs cleanup --older-than-days N` | Delete old persisted jobs |
+| `ai-pipeline jobs cleanup-mpt --older-than-days N [--apply]` | Preview, or explicitly delete, old AI Pipeline-owned MPT task directories |
 
 `run` exits with code `0` for `succeeded` or `partial`; other terminal states return a non-zero code.
 
@@ -374,6 +375,30 @@ output/jobs/<task_id>/
 └── ...               # Pipeline-specific processed/group/artifact directories
 ```
 
+### Where to find generated files
+
+For new or rerun tasks, open this directory when you need the finished files:
+
+```text
+G:\Job\ai-popline\output\deliverables
+```
+
+```text
+output/deliverables/
+├── ai_briefing/<date>/
+├── finance/<date>/
+├── script_video/<task_id>/
+├── ai_art/<task_id>/
+├── grouped_anime/<task_id>/
+├── anime/<task_id>/
+├── japanese/<task_id>/
+└── xhs_image_note/<task_id>/
+```
+
+Video deliveries include the video, subtitle and generation manifest when available, plus `publish_metadata.txt` containing the title, description, and tags. Image-only pipelines place their validated images under the same delivery directory. Files on the same volume are hard-linked to the canonical job artifacts to avoid another full media copy.
+
+`output/jobs/<task_id>/` remains the canonical runtime and evidence store used by the API. Do not move individual files out of a job directory. Tasks created before the delivery-directory change are not backfilled automatically, so their artifacts remain under `output/jobs/` unless the task is rerun.
+
 A job moves through a subset of `route`, `source_scan`, `image`, `video`, `archive`, `upload`, and `complete`.
 
 | Status | Meaning |
@@ -388,6 +413,8 @@ A job moves through a subset of `route`, `source_scan`, `image`, `video`, `archi
 Treat `status.json`, `events.jsonl`, `artifacts.validation`, and `artifacts.publish_results` as completion evidence. A lower tool returning success is not sufficient unless AI Pipeline also validates the resulting artifacts.
 
 Use `ai-pipeline jobs cleanup --older-than-days N` to remove old terminal job directories after their evidence has been archived according to the operator's retention policy. Cleanup skips `queued` and `running` jobs, and also skips jobs with an active deferred publication attempt, so in-flight generation or publishing evidence is not removed by age-based maintenance.
+
+Use `ai-pipeline jobs cleanup-mpt --older-than-days N` to preview stale MPT task directories created by AI Pipeline. It skips directories referenced by persisted jobs and never deletes anything unless `--apply` is supplied.
 
 A job whose worker died keeps its last persisted state, so a stale `queued` or `running` job can never be deleted through any other path. `ai-pipeline jobs reap --older-than-hours N` (default 6) rewrites such jobs to `failed` with `error: "orphaned: no active worker"` and appends a `job_reaped` event, after which `jobs delete` or `jobs cleanup` can remove them. The REST API also runs the same sweep once on startup.
 

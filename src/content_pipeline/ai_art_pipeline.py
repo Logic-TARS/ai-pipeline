@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ._pipeline_common import _group_signature, _group_title, _partial_reasons
+from .deliverables import export_deliverables
 from .errors import ConfigError
 from .media_validation import validate_images, validate_video
 from .models import AiArtGroupArtifact, AiArtParams, AiArtSourceResult, JobStatus, PipelineStep
@@ -63,14 +64,6 @@ def run_ai_art_pipeline(ctx: PipelineContext) -> None:
                 if not adapter_result.ok:
                     raise RuntimeError(adapter_result.message or adapter_result.code.value)
                 record.processed_path = Path(str(adapter_result.artifacts["processed_path"]))
-            if record.archived_path is None:
-                candidates = [Path(record.source_path)]
-                if record.failed_path:
-                    candidates.append(Path(record.failed_path))
-                source = next((candidate for candidate in candidates if candidate.exists()), None)
-                if source is not None:
-                    record.archived_path = archive_source(source, archive_dir)
-                    record.failed_path = None
             record.error = None
         except Exception as exc:
             record.error = str(exc)
@@ -128,6 +121,53 @@ def run_ai_art_pipeline(ctx: PipelineContext) -> None:
         raise ConfigError("no AI art video group was generated successfully")
     artifacts.video = valid_groups[0].video
     artifacts.validation.video = valid_groups[0].validation
+
+    for record in successful:
+        if record.archived_path is not None:
+            continue
+        source = next(
+            (
+                candidate
+                for candidate in (Path(record.source_path), Path(record.failed_path) if record.failed_path else None)
+                if candidate and candidate.exists()
+            ),
+            None,
+        )
+        if source is None:
+            record.error = "source image is unavailable for archiving"
+            continue
+        try:
+            record.archived_path = archive_source(source, archive_dir)
+            record.failed_path = None
+        except Exception as exc:
+            record.error = f"failed to archive successful source: {exc}"
+
+    delivery_files = {
+        **{
+            f"images/{index:04d}{Path(record.processed_path).suffix.lower()}": Path(record.processed_path)
+            for index, record in enumerate(successful, 1)
+            if record.processed_path
+        },
+        **{
+            f"videos/{index:02d}{Path(group.video).suffix.lower()}": Path(group.video)
+            for index, group in enumerate(valid_groups, 1)
+            if group.video
+        },
+    }
+    delivery_dir, exported, metadata_path = export_deliverables(
+        data_dir=settings.data_dir,
+        job_dir=job_dir,
+        pipeline="ai_art",
+        key=task_id,
+        files=delivery_files,
+        title=params.title,
+        description=params.description or snapshot.task.description,
+        tags=params.tags,
+    )
+    artifacts.delivery_dir = delivery_dir
+    artifacts.delivery_files = exported
+    artifacts.publish_metadata_path = metadata_path
+    store.set_artifacts(task_id, artifacts)
 
     plan = resolve_publish_plan("ai_art", snapshot.task, settings=settings)
     publish_grouped_videos(

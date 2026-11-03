@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+from .deliverables import export_deliverables
 from .errors import ConfigError
 from .media_validation import validate_images
 from .models import AiArtSourceResult, JapaneseParams, JobStatus, PipelineStep
@@ -31,10 +32,8 @@ def run_japanese_pipeline(ctx: PipelineContext) -> None:
     settings = ctx.settings
     params = JapaneseParams.model_validate(ctx.route.params)
     source_dir = params.source_dir.expanduser().resolve()
-    output_dir = (params.output_dir or (source_dir / "日语改图")).expanduser().resolve()
     job_dir = store.job_dir(task_id)
-    if output_dir == source_dir:
-        raise ConfigError("japanese output_dir must be different from source_dir")
+    output_dir = job_dir / "processed"
 
     store.mark_running(task_id, PipelineStep.SOURCE_SCAN)
     if not artifacts.source_results:
@@ -95,6 +94,15 @@ def run_japanese_pipeline(ctx: PipelineContext) -> None:
     artifacts.video = None
     artifacts.groups = []
     artifacts.upload_result = {"skipped": True, "reason": "local_image_pipeline"}
+    delivery_dir, delivery_files, _metadata_path = export_deliverables(
+        data_dir=settings.data_dir,
+        job_dir=job_dir,
+        pipeline="japanese",
+        key=task_id,
+        files={f"images/{index:04d}{path.suffix.lower()}": path for index, path in enumerate(artifacts.images, 1)},
+    )
+    artifacts.delivery_dir = delivery_dir
+    artifacts.delivery_files = delivery_files
     store.set_artifacts(task_id, artifacts)
 
     failed = [record for record in artifacts.source_results if record.error]

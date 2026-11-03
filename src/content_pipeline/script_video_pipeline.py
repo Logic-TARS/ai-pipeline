@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from content_pipeline.deliverables import export_deliverables, materialize_job_artifacts
 from content_pipeline.errors import ConfigError
 from content_pipeline.media_validation import validate_video
 from content_pipeline.models import PipelineStep, PublishTarget, ScriptVideoParams
@@ -87,11 +88,39 @@ def run_script_video_pipeline(ctx: PipelineContext) -> None:
     )
     if not params.dry_run:
         ctx.artifacts.validation.video = validate_video(result.video, expected_aspect="9:16", require_audio=True)
-        validate_spoken_subtitle(
-            result.subtitle, media_duration=ctx.artifacts.validation.video.duration_seconds
+        validate_spoken_subtitle(result.subtitle, media_duration=ctx.artifacts.validation.video.duration_seconds)
+        durable = materialize_job_artifacts(
+            job_dir,
+            {
+                "video/video.mp4": result.video,
+                "video/subtitle.srt": result.subtitle,
+                "video/generation_manifest.json": result.manifest,
+            },
         )
+        ctx.artifacts.video = durable["video/video.mp4"]
+        ctx.artifacts.subtitle = durable["video/subtitle.srt"]
+        ctx.artifacts.manifest_path = durable["video/generation_manifest.json"]
     else:
         validate_spoken_subtitle(result.subtitle)
+    if not params.dry_run:
+        delivery_dir, delivery_files, metadata_path = export_deliverables(
+            data_dir=ctx.settings.data_dir,
+            job_dir=job_dir,
+            pipeline="script_video",
+            key=ctx.task_id,
+            files={
+                "video.mp4": ctx.artifacts.video,
+                "subtitle.srt": ctx.artifacts.subtitle,
+                "generation_manifest.json": ctx.artifacts.manifest_path,
+            },
+            title=params.title,
+            description=params.description,
+            tags=params.tags,
+        )
+        ctx.artifacts.delivery_dir = delivery_dir
+        ctx.artifacts.delivery_files = delivery_files
+        ctx.artifacts.publish_metadata_path = metadata_path
+        ctx.store.set_artifacts(ctx.task_id, ctx.artifacts)
     plan = resolve_publish_plan("script_video", ctx.snapshot.task, settings=ctx.settings)
     if plan["requested"]:
         ctx.store.set_progress(ctx.task_id, percent=95, phase="发布", message="正在提交发布任务")
@@ -104,7 +133,7 @@ def run_script_video_pipeline(ctx: PipelineContext) -> None:
         store=ctx.store,
         artifacts=ctx.artifacts,
         settings=ctx.settings,
-        video=result.video.resolve(),
+        video=ctx.artifacts.video.resolve(),
         title=params.title,
         description=params.description,
         tags=params.tags,

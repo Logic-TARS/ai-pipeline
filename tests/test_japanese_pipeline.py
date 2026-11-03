@@ -58,7 +58,9 @@ def test_japanese_pipeline_saves_processed_images_locally(tmp_path: Path, monkey
 
     assert snapshot.status == JobStatus.SUCCEEDED
     assert [path.name for path in snapshot.artifacts.images] == ["0001.png", "0002.png"]
-    assert len(list(output_dir.glob("*.png"))) == 2
+    assert list(output_dir.glob("*.png")) == []
+    assert len(list(snapshot.artifacts.delivery_dir.glob("images/*.png"))) == 2
+    assert snapshot.artifacts.delivery_dir == settings.data_dir / "deliverables" / "japanese" / task_id
     assert len(list(source_dir.glob("*.png"))) == 2
     assert snapshot.artifacts.video is None
     assert snapshot.artifacts.groups == []
@@ -126,7 +128,8 @@ def test_japanese_pipeline_partial_when_one_image_fails(tmp_path: Path, monkeypa
     assert snapshot.artifacts.source_results[1].error == "image rejected"
     assert snapshot.artifacts.source_results[1].adapter_result is not None
     assert snapshot.artifacts.source_results[1].adapter_result.code == ErrorCode.EXTERNAL_TOOL_FAILED
-    assert len(list((source_dir / "日语改图").glob("*.png"))) == 2
+    assert len(list(snapshot.artifacts.delivery_dir.glob("images/*.png"))) == 2
+    assert snapshot.artifacts.delivery_dir == settings.data_dir / "deliverables" / "japanese" / task_id
     assert len(list(source_dir.glob("*.png"))) == 3
 
 

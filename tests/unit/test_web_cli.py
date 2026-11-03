@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from content_pipeline import maintenance
 from content_pipeline.job_store import JobStore
 from content_pipeline.models import JobStatus, PipelineStep, TaskInput
 from content_pipeline.settings import Settings
@@ -174,6 +175,7 @@ def test_serve_rejects_missing_tls_file(tmp_path: Path, monkeypatch: pytest.Monk
         ["ai-pipeline", "jobs", "events", "a" * 32, "--limit", "0"],
         ["ai-pipeline", "jobs", "cleanup", "--older-than-days", "0"],
         ["ai-pipeline", "jobs", "cleanup", "--older-than-days", "-1"],
+        ["ai-pipeline", "jobs", "cleanup-mpt", "--older-than-days", "0"],
         ["ai-pipeline", "jobs", "reap", "--older-than-hours", "0"],
         ["ai-pipeline", "jobs", "reap", "--older-than-hours", "-1"],
     ],
@@ -209,6 +211,45 @@ def test_jobs_delete_cli_deletes_terminal_jobs_and_exits_nonzero_when_blocked(
     monkeypatch.setattr(sys, "argv", ["ai-pipeline", "jobs", "delete", terminal])
     assert cli.main() == 0
     assert json.loads(capsys.readouterr().out)["not_found"] == [terminal]
+
+
+def test_jobs_cleanup_mpt_defaults_to_preview_and_protects_referenced_tasks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings = Settings(_env_file=None, data_dir=tmp_path / "output", mpt_dir=tmp_path / "mpt")
+    store = JobStore(settings.data_dir)
+    snapshot = store.create(TaskInput(description="MPT cleanup preview"))
+    referenced = settings.mpt_dir / "storage" / "tasks" / "referenced"
+    snapshot.artifacts.mpt_task_dir = referenced
+    store.save(snapshot)
+    captured = {}
+
+    def cleanup(mpt_dir, *, older_than_days, protected, apply):
+        captured.update(
+            mpt_dir=mpt_dir,
+            older_than_days=older_than_days,
+            protected=protected,
+            apply=apply,
+        )
+        return maintenance.MptCleanupReport(False, (tmp_path / "candidate",), 123)
+
+    monkeypatch.setattr(maintenance, "cleanup_mpt_tasks", cleanup)
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+    monkeypatch.setattr(sys, "argv", ["ai-pipeline", "jobs", "cleanup-mpt", "--older-than-days", "7"])
+
+    assert cli.main() == 0
+    assert captured == {
+        "mpt_dir": settings.mpt_dir,
+        "older_than_days": 7,
+        "protected": {referenced.resolve()},
+        "apply": False,
+    }
+    assert json.loads(capsys.readouterr().out) == {
+        "applied": False,
+        "candidates": [str(tmp_path / "candidate")],
+        "total_size": 123,
+        "failures": [],
+    }
 
 
 def test_jobs_reap_cli_fails_orphaned_jobs_so_they_become_deletable(

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 from ._pipeline_common import _group_signature, _group_title, _partial_reasons
+from .deliverables import export_deliverables
 from .errors import ConfigError
 from .grouping import group_by_prefix
 from .media_validation import validate_images, validate_video
@@ -40,7 +42,6 @@ def run_grouped_anime_pipeline(ctx: PipelineContext) -> None:
     params = GroupedAnimeParams.model_validate(ctx.route.params)
     source_dir = params.source_dir.expanduser().resolve()
     archive_dir = (params.archive_dir or (source_dir / "已处理")).expanduser().resolve()
-    failed_dir = params.failed_dir.expanduser().resolve() if params.failed_dir else None
     job_dir = store.job_dir(task_id)
     anime_profile = load_profile("anime", settings.profiles_dir)
 
@@ -52,38 +53,40 @@ def run_grouped_anime_pipeline(ctx: PipelineContext) -> None:
         artifacts.source_results = [AiArtSourceResult(source_path=path) for path in sources]
         store.set_artifacts(task_id, artifacts)
 
-    # Archive successful source images, move failed ones
+    successful: list[AiArtSourceResult] = []
+    staged_images: list[Path] = []
     for record in artifacts.source_results:
         try:
-            if record.archived_path is None:
-                candidates = [Path(record.source_path)]
-                if record.failed_path:
-                    candidates.append(Path(record.failed_path))
-                source = next((candidate for candidate in candidates if candidate.exists()), None)
-                if source is not None:
-                    record.archived_path = archive_source(source, archive_dir)
-                    record.failed_path = None
+            source = next(
+                (
+                    candidate
+                    for candidate in (
+                        Path(record.source_path),
+                        Path(record.archived_path) if record.archived_path else None,
+                        Path(record.failed_path) if record.failed_path else None,
+                    )
+                    if candidate and candidate.is_file()
+                ),
+                None,
+            )
+            if source is None:
+                raise ConfigError(f"source image is unavailable: {record.source_path}")
+            staged = job_dir / "source_images" / source.name
+            staged.parent.mkdir(parents=True, exist_ok=True)
+            if not staged.is_file() or staged.stat().st_size != source.stat().st_size:
+                shutil.copy2(source, staged)
+            record.processed_path = staged
             record.error = None
+            successful.append(record)
+            staged_images.append(staged)
         except Exception as exc:
             record.error = str(exc)
-            if record.failed_path is None and failed_dir:
-                source = Path(record.source_path)
-                if source.exists():
-                    try:
-                        record.failed_path = archive_source(source, failed_dir)
-                    except Exception as move_exc:
-                        record.error = f"{record.error}; failed to move source to failed_dir: {move_exc}"
         store.set_artifacts(task_id, artifacts)
 
-    successful = [
-        record
-        for record in artifacts.source_results
-        if not record.error and record.archived_path and Path(record.archived_path).is_file()
-    ]
     if not successful:
         raise ConfigError("Source scan did not produce any usable images")
 
-    artifacts.images = [Path(record.archived_path) for record in successful]
+    artifacts.images = staged_images
     artifacts.validation.images = validate_images(artifacts.images, len(artifacts.images))
 
     # Group archived images by prefix
@@ -163,9 +166,51 @@ def run_grouped_anime_pipeline(ctx: PipelineContext) -> None:
     artifacts.video = valid_groups[0].video
     artifacts.validation.video = valid_groups[0].validation
 
+    delivered_source_paths = {Path(path).resolve() for group in valid_groups for path in group.source_images}
+    for record in successful:
+        if not record.processed_path or Path(record.processed_path).resolve() not in delivered_source_paths:
+            continue
+        if record.archived_path is not None:
+            continue
+        source = Path(record.source_path)
+        if not source.is_file():
+            record.error = "source image is unavailable for archiving"
+            continue
+        try:
+            record.archived_path = archive_source(source, archive_dir)
+        except Exception as exc:
+            record.error = f"failed to archive successful source: {exc}"
+
+    delivery_files = {
+        **{
+            f"videos/{index:02d}{Path(group.video).suffix.lower()}": Path(group.video)
+            for index, group in enumerate(valid_groups, 1)
+            if group.video
+        },
+        **{
+            f"music/{index:02d}{Path(group.bgm).suffix.lower()}": Path(group.bgm)
+            for index, group in enumerate(valid_groups, 1)
+            if group.bgm
+        },
+    }
+    publish_title = params.title or snapshot.task.topic or "动漫作品展示"
+    delivery_dir, exported, metadata_path = export_deliverables(
+        data_dir=settings.data_dir,
+        job_dir=job_dir,
+        pipeline="grouped_anime",
+        key=task_id,
+        files=delivery_files,
+        title=publish_title,
+        description=params.description or snapshot.task.description,
+        tags=params.tags,
+    )
+    artifacts.delivery_dir = delivery_dir
+    artifacts.delivery_files = exported
+    artifacts.publish_metadata_path = metadata_path
+    store.set_artifacts(task_id, artifacts)
+
     # Publish step
     plan = resolve_publish_plan("grouped_anime", snapshot.task, settings=settings)
-    publish_title = params.title or snapshot.task.topic or "动漫作品展示"
     publish_grouped_videos(
         snapshot=snapshot,
         store=store,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from content_pipeline.deliverables import export_deliverables
 from content_pipeline.media_validation import validate_images, validate_video
 from content_pipeline.models import JobStatus, PipelineStep
 from content_pipeline.pipelines.registry import PipelineContext, PipelineMeta, register
@@ -58,6 +59,22 @@ def run_anime_pipeline(ctx: PipelineContext) -> None:
             expected_aspect=profile.video_gen.aspect,
             require_audio=bool(profile.video_gen.voice_name),
         )
+        files = {f"images/{index:02d}{path.suffix.lower()}": path for index, path in enumerate(ctx.artifacts.images, 1)}
+        files[f"video{ctx.artifacts.video.suffix.lower()}"] = ctx.artifacts.video
+        raw_tags = params.get("tags") or []
+        delivery_dir, delivery_files, metadata_path = export_deliverables(
+            data_dir=ctx.settings.data_dir,
+            job_dir=job_dir,
+            pipeline="anime",
+            key=ctx.task_id,
+            files=files,
+            title=str(params.get("title") or topic),
+            description=str(params.get("description") or ctx.snapshot.task.description),
+            tags=[str(tag) for tag in raw_tags] if isinstance(raw_tags, list) else [],
+        )
+        ctx.artifacts.delivery_dir = delivery_dir
+        ctx.artifacts.delivery_files = delivery_files
+        ctx.artifacts.publish_metadata_path = metadata_path
     ctx.store.set_artifacts(ctx.task_id, ctx.artifacts)
 
     if not ctx.snapshot.task.publish:
